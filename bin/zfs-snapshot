@@ -1,0 +1,112 @@
+#!/usr/bin/env ruby
+
+require 'date'
+require 'optparse'
+require 'logger'
+require 'shellwords'
+
+Version = '0.1.0'
+
+######################################################################
+
+module ZFS
+    def self.exists?(fs)
+        cmd  = %w(zfs list -H)
+        cmd << fs
+        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
+    end
+    
+    def self.snapshot(fs, name, recursive: false, logger: nil)
+        name = name&.to_s
+        raise ArgumentError if name.nil? || name.empty?
+        cmd  = %w(zfs snapshot)
+        cmd << '-r' if $opts[:recursive]
+        cmd << [ fs, name ].join('@')
+        logger&.info { Shellwords.join(cmd) }
+        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
+    end
+
+    def self.destroy(fs, name, recursive: false, logger: nil)
+        name = name&.to_s
+        raise ArgumentError if name.nil? || name.empty?
+        cmd  = %w(zfs destroy)
+        cmd << '-r' if $opts[:recursive]
+        cmd << [ fs, name ].join('@')
+        logger&.info { Shellwords.join(cmd) }
+        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
+    end
+end
+
+######################################################################
+
+$opts  = { :header => true, :profile => 'default' }
+parser = OptionParser.new do |op|
+    op.banner = "Usage: #{op.program_name} fs"
+
+    op.on '-r', '--recursive',       'Recursive'
+    op.on '-p', '--profile PROFILE', 'Snapshotting profile'
+    op.on '-v', '--[no-]verbose',    'Run verbosely'
+    op.on '-V', '--version',         'Version' do
+        puts op.ver
+        exit
+    end
+    op.on '-h', '--help',          'Help' do
+        puts op
+        exit
+    end    
+end
+parser.parse!(into: $opts)
+
+unless ARGV.one?
+    puts parser
+    exit
+end
+
+$fs = ARGV.shift
+unless ZFS.exists?($fs)
+    $stderr.puts "#{parser.program_name}: dataset doesn't exist"
+    exit 1
+end
+
+$logger = if $opts[:verbose]
+              Logger.new(STDOUT)
+          end
+$logger&.formatter = proc { |severity, datetime, progname, msg|
+    "%s: %s\n" % [ severity, msg ]
+}
+
+######################################################################
+
+
+$logger&.info "Using profile <#{$opts[:profile]}>"
+
+
+$ts = Date.today
+$ts_start_of_week   = $ts - ($ts.wday - 1) % 7
+$tx_start_of_month  = $ts - ($ts.day  - 1)
+$ts_prev_week       = $ts - 7
+$ts_prev_month      = $ts.prev_month
+$ts_prev_3month     = $ts.prev_month(3)
+$ts_prev_6month     = $ts.prev_month(6)
+
+zopts = { :recursive => $opts[:recursive],
+          :logger    => $logger }
+
+
+begin
+
+    case $opts[:profile]
+    when 'default'
+        ZFS.snapshot($fs, $ts, **zopts)
+        if $ts_prev_week != $ts_start_of_week
+            ZFS.destroy($fs, $ts_prev_week, **zopts)
+        end
+        ZFS.destroy($fs, $ts_prev_6month, **zopts)
+    else
+        raise "unsupported profile (#{$opts[:profile]})"
+    end
+rescue => e
+    $stderr.puts "#{parser.program_name}: #{e}"
+end
+
+exit 0
