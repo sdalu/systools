@@ -1,11 +1,15 @@
 #!/usr/bin/env ruby
 
+ENV['BUNDLE_GEMFILE'] ||= File.join(__dir__, '..', 'Gemfile')
+
+require 'bundler/setup'
 require 'date'
 require 'optparse'
-require 'logger'
 require 'shellwords'
+require 'tty/logger'
 
 Version = '0.1.0'
+
 
 ######################################################################
 
@@ -15,15 +19,23 @@ module ZFS
         cmd << fs
         system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
     end
-    
+
+    def self.log_cmd_status(cmd, status, logger: nil)
+      logger&.debug {  [ Shellwords.join(cmd),
+                         ' (', status ? 'OK' : 'FAILED', ')'
+                       ].join  }
+    end
+
     def self.snapshot(fs, name, recursive: false, logger: nil)
         name = name&.to_s
         raise ArgumentError if name.nil? || name.empty?
         cmd  = %w(zfs snapshot)
         cmd << '-r' if $opts[:recursive]
         cmd << [ fs, name ].join('@')
-        logger&.info { Shellwords.join(cmd) }
-        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
+        system(*cmd, :in  => :close,
+                     :out => File::NULL, :err => File::NULL).tap do |status|
+            log_cmd_status(cmd, status, logger: logger)
+        end
     end
 
     def self.destroy(fs, name, recursive: false, logger: nil)
@@ -32,8 +44,10 @@ module ZFS
         cmd  = %w(zfs destroy)
         cmd << '-r' if $opts[:recursive]
         cmd << [ fs, name ].join('@')
-        logger&.info { Shellwords.join(cmd) }
-        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
+        system(*cmd, :in  => :close,
+                     :out => File::NULL, :err => File::NULL).tap do |status|
+            log_cmd_status(cmd, status, logger: logger)
+        end
     end
 end
 
@@ -46,6 +60,7 @@ parser = OptionParser.new do |op|
     op.on '-r', '--recursive',       'Recursive'
     op.on '-p', '--profile PROFILE', 'Snapshotting profile'
     op.on '-v', '--[no-]verbose',    'Run verbosely'
+    op.on '-D', '--[no-]debug',      'Enable debug output'
     op.on '-V', '--version',         'Version' do
         puts op.ver
         exit
@@ -55,7 +70,7 @@ parser = OptionParser.new do |op|
         exit
     end    
 end
-parser.parse!(into: $opts)
+parser.order!(into: $opts)
 
 unless ARGV.one?
     puts parser
@@ -68,17 +83,17 @@ unless ZFS.exists?($fs)
     exit 1
 end
 
-$logger = if $opts[:verbose]
-              Logger.new(STDOUT)
+$logger = if $opts[:verbose] || $opts[:debug]
+              TTY::Logger.new do |cfg|
+                  cfg.level = $opts[:debug] ? :debug : :info
+              end
           end
-$logger&.formatter = proc { |severity, datetime, progname, msg|
-    "%s: %s\n" % [ severity, msg ]
-}
+
 
 ######################################################################
 
 
-$logger&.info "Using profile <#{$opts[:profile]}>"
+$logger&.debug "Using profile <#{$opts[:profile]}>"
 
 
 $ts = Date.today
@@ -97,7 +112,24 @@ begin
 
     case $opts[:profile]
     when 'default'
-        ZFS.snapshot($fs, $ts, **zopts)
+        create   = [ ]
+        create  << $ts
+        create.map!(&:to_s)
+
+        destroy  = [ ]
+        destroy << $ts_prev_week   if $ts_prev_week != $ts_start_of_week
+        destroy << $ts_prev_6month
+        destroy.map!(&:to_s)
+
+        
+        $logger&.info "Create : #{create .join(', ')}"
+        $logger&.info "Destroy: #{destroy.join(', ')}"
+
+        
+            ZFS.snapshot($fs, $ts, **zopts)
+
+
+
         if $ts_prev_week != $ts_start_of_week
             ZFS.destroy($fs, $ts_prev_week, **zopts)
         end
