@@ -99,6 +99,8 @@ $logger&.debug "Using profile <#{$opts[:profile]}>"
 $ts = Date.today
 $ts_start_of_week   = $ts - ($ts.wday - 1) % 7
 $tx_start_of_month  = $ts - ($ts.day  - 1)
+$ts_prev_day        = $ts - 1
+$ts_prev_sunday     = $ts_prev_day - $ts_prev_day.wday
 $ts_prev_week       = $ts - 7
 $ts_prev_month      = $ts.prev_month
 $ts_prev_3month     = $ts.prev_month(3)
@@ -117,17 +119,16 @@ begin
         create.map!(&:to_s)
 
         destroy  = [ ]
-        destroy << $ts_prev_week   if ! $ts_prev_week.monday?
+        destroy << $ts_prev_week   if $ts_prev_week != $ts_prev_sunday
         destroy << $ts_prev_6month
         destroy.map!(&:to_s)
 
-        
         $logger&.info "Create : #{create .join(', ')}"
         $logger&.info "Destroy: #{destroy.join(', ')}"
-        
+
         ZFS.snapshot($fs, $ts, **zopts)
             
-        ZFS.destroy($fs, $ts_prev_week,   **zopts) if ! $ts_prev_week.monday?
+        ZFS.destroy($fs, $ts_prev_week,   **zopts) if $ts_prev_week != $ts_prev_sunday
         ZFS.destroy($fs, $ts_prev_6month, **zopts)
     else
         raise "unsupported profile (#{$opts[:profile]})"
