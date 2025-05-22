@@ -117,22 +117,17 @@ begin
         create.map!(&:to_s)
 
         destroy  = [ ]
-        destroy << $ts_prev_week   if $ts_prev_week != $ts_start_of_week
+        destroy << $ts_prev_week   if ! $ts_prev_week.monday?
         destroy << $ts_prev_6month
         destroy.map!(&:to_s)
 
         
         $logger&.info "Create : #{create .join(', ')}"
         $logger&.info "Destroy: #{destroy.join(', ')}"
-
         
-            ZFS.snapshot($fs, $ts, **zopts)
-
-
-
-        if $ts_prev_week != $ts_start_of_week
-            ZFS.destroy($fs, $ts_prev_week, **zopts)
-        end
+        ZFS.snapshot($fs, $ts, **zopts)
+            
+        ZFS.destroy($fs, $ts_prev_week,   **zopts) if ! $ts_prev_week.monday?
         ZFS.destroy($fs, $ts_prev_6month, **zopts)
     else
         raise "unsupported profile (#{$opts[:profile]})"
