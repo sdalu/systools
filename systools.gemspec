@@ -1,17 +1,17 @@
 Gem::Specification.new do |s|
   s.name        = "systools"
   s.version     = "0.1.0"
-  s.summary     = "System tools."
+  s.summary     = "System Tools"
   s.description = "A set of system tools."
   s.authors     = [ "Stéphane D'Alu" ]
   s.email       = [ "sdalu@sdalu.com" ]
 
-  s.files = Dir["lib/**/*.rb"]
-  s.require_paths = ["lib"]
+#  s.files = Dir["lib/**/*.rb"]
+#  s.require_paths = ["lib"]
 
-  s.executables = [ 'zfs-snapshot' ]
+  s.executables = Dir['*', base: 'bin' ]
   
-  # Specify your dependencies here
+  # Dependencies
   s.add_dependency 'pastel'
   s.add_dependency 'tty-logger'
   s.add_dependency 'tty-spinner'
