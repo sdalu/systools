@@ -1,0 +1,12 @@
+#!/usr/bin/env ruby
+
+case RUBY_PLATFORM
+when /-freebsd\d+$/i
+    exec '/usr/bin/nice', '-n', '20',
+         '/usr/sbin/idprio', '30', *ARGV
+    warn "failed to execute command"
+else
+    warn "unsupported platform: #{RUBY_PLATFORM}"
+end
+
+exit 1
