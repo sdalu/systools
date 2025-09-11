@@ -1,0 +1,100 @@
+#!/usr/bin/env ruby
+
+require 'bundler/setup'
+require 'optparse'
+require 'open3'
+require 'pastel'
+require 'tty/logger'
+require 'tty/spinner'
+
+Version = '1.0.0'
+
+# Parse command line
+$opts = { :keep      => 1,
+          :recursive => false,
+          :deferred  => false,
+        }
+
+$parser = OptionParser.new do |opts|
+    opts.banner = "Usage: #{opts.program_name} [options] dataset..."
+    opts.separator ''
+
+    opts.separator 'Options:'
+    opts.on '-k', '--keep=NUMBER',  Integer,
+            "Number of last snapshots to keep",
+            "  (default to #{$opts[:keep]})"
+    opts.on '-r', '--recursive',     "Looks also for children datasets"
+    opts.on '-d', '--deferred',      "Mark for deferred destruction",
+                                     "  (if not possible immediate)"
+    opts.on '-v', '--[no-]verbose',  "Run verbosely"
+    opts.on '-h', '--help',          "Show this message" do
+        puts opts
+        exit
+    end
+    opts.on '-V', '--version',       "Show version" do
+        puts opts.ver
+        exit
+    end
+    opts.separator ''
+end
+$parser.parse!(into: $opts)
+
+# Process title
+Process.setproctitle($parser.program_name)
+
+# Show help if no dataset given
+if ARGV.empty?
+  puts $parser
+  exit 1
+end
+
+# Initialize
+$pastel  = Pastel.new
+$logger  = TTY::Logger.new if $opts[:verbose]
+
+# Process datasets
+ARGV.each do |dataset|
+  keep = $opts[:keep]
+
+  # Retrieve snapshots
+  cmd  = [ 'zfs', 'list', '-H', '-t', 'snapshot', '-S', 'creation',
+                                '-o', 'name'  ]
+  cmd += $opts[:recursive] ? [ '-r' ] : [ '-d1' ]
+  cmd += [ '--', dataset ]
+  data, error, status = Open3.capture3(*cmd)
+  unless status.success? && error.empty?
+    unless $logger&.error(dataset + ' ' +
+                          $pastel.yellow('(retrieving snapshots)'))
+      warn "Failed to retrieve snapshots (#{dataset})"
+    end
+    next
+  end
+
+  # For each snapshot name grouped by datasets
+  data.lines.map(&:chomp).map { it.split('@', 2) }
+      .group_by(&:first).transform_values { it.map(&:last) }
+      .each do |ds, snapshots|
+    if snapshots.size > keep
+      snap    = snapshots[-(1 + keep)]
+      spinner = if $opts[:verbose]
+                  TTY::Spinner.new("[:spinner] #{ds}",
+                                  :success_mark => $pastel.green('✔'),
+                                  :error_mark   => $pastel.red(  '✖'))
+                end
+      begin
+        spinner&.auto_spin
+        cmd  = [ 'zfs', 'destroy'       ]
+        cmd += [ '-d'                   ] if $opts[:deferred]
+        cmd += [ '--', "#{ds}@%#{snap}" ]
+        if system(*cmd)
+          spinner&.success($pastel.blue("➡ #{snap}")) # ⇨
+        # spinner&.success($pastel.yellow('(skipped)'))
+        else
+          unless spinner&.error($pastel.yellow('(failed)'))
+            warn "Failed to destroy snapshot (#{ds})"
+          end
+        end
+      end
+    end
+  end
+end
