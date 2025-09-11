@@ -1,0 +1,72 @@
+#!/usr/bin/env ruby
+
+Version = '0.1.0'
+
+require 'optparse'
+require 'yaml'
+require 'socket'
+require 'pushover'
+
+
+# Parse command line
+$opts   = { }
+$parser = OptionParser.new do |opts|
+    opts.banner = "Usage: pushover [options] [USER:]APP MSG"
+    opts.separator ''
+
+    opts.separator 'Options:'
+    opts.on '-t', '--title TITLE',   "Use title"
+    opts.on '-v', '--[no-]verbose',  "Run verbosely"
+    opts.on '-V', '--version',       "Show version" do
+        puts opts.ver
+        exit
+    end
+end
+$parser.parse!(into: $opts)
+
+# Process title
+Process.setproctitle($parser.program_name)
+
+begin
+    # Load configuration
+    cfg = begin
+              YAML.load_file(File.join(ENV['HOME'], '.pushover'))
+          rescue Errno::ENOENT
+              raise "Configuration file ~/.pushover not found!"
+          end
+    cfg['app' ].each {|name, key| PushOver.register name.to_sym, key }
+    cfg['user'].each {|name, key| PushOver.user     name.to_sym, key }
+        
+    user, _ = cfg['user'].first
+    default_user = user.to_sym
+
+    # Check arguments
+    raise "user:app and message arguments are required" if ARGV.size != 2
+        
+    # Retrieve USER:APP
+    user_app = ARGV[0].split(':', 2)
+    if user_app.one?
+        raise "no user specified and no default user" if default_user.nil?
+        user_app.unshift(default_user)
+    end
+    user, app = user_app
+    
+    # Retrieve message
+    msg = ARGV[1]
+
+    # Build substitution values
+    hostname = Socket.gethostname
+    subst    = { '%{HOST}'     => hostname.split('.')[0],
+                 '%{HOSTNAME}' => hostname }
+
+    # Substited message
+    msg      = msg.gsub(/%\{[^}]+\}/, subst)
+
+    # Pushover
+    $pushover = PushOver.new user.to_sym, app.to_sym
+    $pushover.send(msg, $opts[:title])
+
+rescue RuntimeError => e
+    warn "#{$parser.program_name}: #{e.message}"
+    exit 1
+end

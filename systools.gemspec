@@ -6,8 +6,8 @@ Gem::Specification.new do |s|
   s.authors     = [ "Stéphane D'Alu" ]
   s.email       = [ "sdalu@sdalu.com" ]
 
-#  s.files = Dir["lib/**/*.rb"]
-#  s.require_paths = ["lib"]
+  s.files = Dir["lib/**/*.rb"]
+  s.require_paths = ["lib"]
 
   s.executables = Dir['*', base: 'bin' ]
   
