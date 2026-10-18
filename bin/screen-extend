@@ -1,0 +1,295 @@
+#!/bin/sh
+#
+# screen-extend [-n] [-v] [-i internal] [-o output] [-m mode] [-p place]
+#
+# Extend the desktop onto an external output, under X11, on FreeBSD and
+# Linux alike: the external output becomes the primary at its preferred
+# mode, or -m's, at 0x0, and the internal panel is placed against it, at
+# its own preferred mode.  With no external output connected, the
+# internal panel alone is left on, as the primary: so one command, run on
+# docking and undocking alike, gives the layout for either.
+#
+#   place  where the internal panel goes: below (the default), above,
+#          left, right, or off
+#
+# The internal panel is -i, else the first connected eDP, LVDS or DSI
+# output; the external output is -o, else the first other connected one
+# that lists a mode, so a dock that renumbers its ports (DP-1, DP-1-1,
+# DP-3-1) needs no editing. Any other connected output is turned off, as
+# is an output still driving a mode after it was disconnected (an
+# undock), so the result never overlaps what was there before. Positions
+# are explicit, not --below and the like, so the layout does not depend
+# on the mode an output was left in. Outputs are aligned on their top or
+# left edge.
+#
+# The outputs are probed again first, and given a second to settle, since
+# a dock that has just woken up answers late; the layout is then applied
+# and read back, up to three times, because such a dock can drop the
+# request.  $SCREEN_EXTEND_SETTLE sets that second for a slower dock.
+#
+#   -n  dry run: print the xrandr command instead of running it
+#   -v  verbose: report the probe and the layout on stderr
+#   -i  the internal panel
+#   -o  the external output
+#   -m  the external output's mode (WxH), instead of its preferred one
+#   -p  where the internal panel goes (default: below)
+#   -h  show this help
+#
+# Exit: 0 done, 1 no connected output, a named output not connected, a
+# mode it does not list, or a layout that would not stick; 2 usage error.
+#
+# shellcheck disable=SC3043 # 'local' is supported by every shell targeted here
+set -eu
+
+# xrandr lives in /usr/local/bin on FreeBSD, which is not in the PATH of
+# every session manager, and in /usr/bin on Linux.
+PATH=$PATH:/usr/local/bin
+: "${XRANDR:=xrandr}"
+: "${SCREEN_EXTEND_SETTLE:=1}"
+
+progname=${0##*/}
+verbose=0
+dryrun=0
+probe=
+
+die()  { printf '%s: %s\n' "$progname" "$*" >&2; exit 1; }
+warn() { printf '%s: %s\n' "$progname" "$*" >&2; }
+log()  { [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$progname" "$*" >&2; }
+
+usage() {
+    printf 'usage: %s [-n] [-v] [-i internal] [-o output] [-m mode]\n' \
+        "$progname"
+    printf '       %*s [-p below|above|left|right|off]\n' "${#progname}" ''
+}
+
+bad_usage() {
+    usage >&2
+    exit 2
+}
+
+cleanup() { [ -z "$probe" ] || rm -f -- "$probe"; }
+
+# Run xrandr, or just show what would be run.  Every argument is a flag, an
+# output name or a mode, so none of them can contain whitespace.
+run() {
+    if [ "$dryrun" -ne 0 ]; then
+        printf 'xrandr %s\n' "$*"
+    else
+        "$XRANDR" "$@"
+    fi
+}
+
+query() {
+    "$XRANDR" --query > "$probe" || die "xrandr --query failed"
+}
+
+# --- questions about the probe, one xrandr --query kept in a temp file so
+# --- that every answer below describes the same instant of the display state
+
+connected() { awk '$2 == "connected" { print $1 }' "$probe"; }
+
+is_connected() {
+    awk -v want="$1" '$1 == want && $2 == "connected" { found = 1 }
+                      END { exit !found }' "$probe"
+}
+
+# Outputs disconnected but still driving a mode: left over from an undock.
+stale() {
+    awk '$2 == "disconnected" && $3 ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/ {
+             print $1 }' "$probe"
+}
+
+# Every mode WxH an output lists, in xrandr's own order (largest first).
+modes_of() {
+    awk -v want="$1" '
+        /^[^ \t]/                              { out = $1; next }
+        out == want && $1 ~ /^[0-9]+x[0-9]+$/  { print $1 }
+    ' "$probe"
+}
+
+# The mode xrandr marks preferred (+), falling back to the first listed.
+preferred_mode() {
+    awk -v want="$1" '
+        /^[^ \t]/                             { out = $1; next }
+        out != want || $1 !~ /^[0-9]+x[0-9]+$/ { next }
+        {
+            if (first == "") first = $1
+            for (i = 2; i <= NF; i++)
+                if ($i ~ /\+/) { print $1; found = 1; exit }
+        }
+        END { if (!found && first != "") print first }
+    ' "$probe"
+}
+
+# The geometry WxH+X+Y an output drives now; empty when it is off.
+geometry() {
+    awk -v want="$1" '
+        $1 == want {
+            for (i = 2; i <= NF; i++)
+                if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) { print $i; exit }
+        }
+    ' "$probe"
+}
+
+# Is every "output geometry" pair of $1 (one per line, "off" for an output
+# that must be off) what the probe shows?
+applied() {
+    local out want
+    while read -r out want; do
+        [ -n "$out" ] || continue
+        if [ "$want" = off ]; then
+            [ -z "$(geometry "$out")" ] || return 1
+        else
+            [ "$(geometry "$out")" = "$want" ] || return 1
+        fi
+    done <<EXPECT
+$1
+EXPECT
+}
+
+main() {
+    local internal='' external='' mode='' place=below
+    local all out imode ix=0 iy=0 ex=0 ey=0 expect try
+
+    while getopts nvi:o:m:p:h opt; do
+        case $opt in
+            n) dryrun=1         ;;
+            v) verbose=1        ;;
+            i) internal=$OPTARG ;;
+            o) external=$OPTARG ;;
+            m) mode=$OPTARG     ;;
+            p) place=$OPTARG    ;;
+            h) usage; exit 0    ;;
+            *) bad_usage        ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    [ $# -eq 0 ] || bad_usage
+
+    case $mode in
+        '') ;;
+        *[!0-9x]* | *x*x* | x* | *x) warn "$mode: not a WxH mode"; bad_usage ;;
+        *x*) ;;
+        *) warn "$mode: not a WxH mode"; bad_usage ;;
+    esac
+    case $place in
+        below | above | left | right | off) ;;
+        *) warn "$place: not below, above, left, right or off"; bad_usage ;;
+    esac
+
+    case $SCREEN_EXTEND_SETTLE in
+        '' | *[!0-9.]* | *.*.*)
+            warn "SCREEN_EXTEND_SETTLE: not a number of seconds"; bad_usage ;;
+    esac
+    command -v "$XRANDR" >/dev/null 2>&1 || die "$XRANDR: not found"
+
+    probe=$(mktemp "${TMPDIR:-/tmp}/$progname.XXXXXX") \
+        || die "cannot create a temp file"
+    trap cleanup EXIT
+    trap 'exit 1' HUP INT TERM
+
+    # Probe once to make the server look again, let a waking dock settle,
+    # and only then take the probe the layout is worked out from.
+    query
+    [ "$dryrun" -ne 0 ] || sleep "$SCREEN_EXTEND_SETTLE"
+    query
+
+    all=$(connected)
+    [ -n "$all" ] || die "no connected output"
+    log "connected: $(printf '%s\n' "$all" | tr '\n' ' ')"
+
+    if [ -n "$internal" ]; then
+        is_connected "$internal" || die "$internal: not a connected output"
+    else
+        internal=$(printf '%s\n' "$all" |
+            awk '/^(eDP|LVDS|DSI)/ { print; exit }')
+    fi
+    if [ -n "$external" ]; then
+        is_connected "$external" || die "$external: not a connected output"
+        [ "$external" != "$internal" ] || die "$external: is the internal panel"
+    else
+        # The first that lists a mode: a port that says connected but
+        # lists none (no EDID) has nothing to drive, and is turned off.
+        for out in $(printf '%s\n' "$all" | grep -v -x -e "${internal:-//}" ||
+                true); do
+            if [ -n "$(modes_of "$out")" ]; then
+                external=$out
+                break
+            fi
+        done
+    fi
+    log "internal: ${internal:-none}, external: ${external:-none}"
+    if [ -z "$external" ] && [ -n "$mode" ]; then
+        die "no external output to set to $mode"
+    fi
+
+    set --
+    expect=''
+    if [ -n "$external" ]; then
+        if [ -n "$mode" ]; then
+            modes_of "$external" | grep -q -x -e "$mode" ||
+                die "$external: does not list $mode"
+        else
+            mode=$(preferred_mode "$external")
+            [ -n "$mode" ] || die "$external: no usable mode"
+        fi
+    fi
+    if [ -n "$internal" ] &&
+        { [ -z "$external" ] || [ "$place" != off ]; }; then
+        imode=$(preferred_mode "$internal")
+        [ -n "$imode" ] || die "$internal: no usable mode"
+    else
+        imode=
+    fi
+
+    if [ -n "$external" ] && [ -n "$imode" ]; then
+        case $place in
+            below) iy=${mode#*x} ;;
+            above) ey=${imode#*x} ;;
+            left)  ex=${imode%x*} ;;
+            right) ix=${mode%x*} ;;
+        esac
+    fi
+    if [ -n "$external" ]; then
+        set -- "$@" --output "$external" --mode "$mode" --pos "${ex}x${ey}" \
+            --primary
+        expect="$external $mode+$ex+$ey"
+        log "external: $external at $mode+$ex+$ey, primary"
+    fi
+    if [ -n "$imode" ]; then
+        set -- "$@" --output "$internal" --mode "$imode" --pos "${ix}x${iy}"
+        [ -n "$external" ] || set -- "$@" --primary
+        expect="$expect
+$internal $imode+$ix+$iy"
+        log "internal: $internal at $imode+$ix+$iy"
+    elif [ -n "$internal" ]; then
+        set -- "$@" --output "$internal" --off
+        expect="$expect
+$internal off"
+        log "internal: $internal off"
+    fi
+    for out in $(printf '%s\n' "$all" | grep -v -x -e "${internal:-//}" \
+            -e "${external:-//}" || true) $(stale); do
+        set -- "$@" --output "$out" --off
+        expect="$expect
+$out off"
+        log "off: $out"
+    done
+
+    if [ "$dryrun" -ne 0 ]; then
+        run "$@"
+        return 0
+    fi
+    for try in 1 2 3; do
+        run "$@"
+        query
+        if applied "$expect"; then
+            return 0
+        fi
+        log "layout not applied (attempt $try)"
+        [ "$try" -eq 3 ] || sleep "$SCREEN_EXTEND_SETTLE"
+    done
+    die "the layout would not stick after $try attempts"
+}
+
+main "$@"

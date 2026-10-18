@@ -145,6 +145,25 @@ early and leave the rest to be read as curl options, so a token outside a
 bearer token's alphabet (RFC 6750) is refused rather than escaped.
 
 
+## screen-extend: probe again, then check it took
+
+`screen-mirror` asks once and changes everything in one call, so the
+screens never pass through a half-applied layout. `screen-extend` keeps
+the one call but not the one probe, because it runs at the moment a dock
+is plugged in or wakes up, when its outputs are still appearing: it asks
+twice, a settling second apart, and lays out from the second answer.
+After the call it reads the layout back and compares every output's
+geometry, and applies it again, up to three times, because a waking dock
+can drop the request while xrandr still reports success.
+
+The external output is the first other connected one that lists a mode,
+not merely the first connected: a port that says connected but has no
+EDID has nothing to drive, and choosing it would leave the real screen
+dark. Positions are worked out and given explicitly rather than with
+`--below` and the like, so the result does not depend on the mode an
+output was left in.
+
+
 ## shrinkpdf: never worse than the input
 
 Ghostscript writes to a temporary file, and only then is the smaller of

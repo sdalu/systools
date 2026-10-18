@@ -1,10 +1,23 @@
 #!/bin/sh
-# xrandr: answers --query with $XRANDR_OUTPUT, or fails with $XRANDR_EXIT;
-# any other call is logged to $XRANDR_LOG, one call per line.
+# xrandr: answers --query with $XRANDR_OUTPUT, or, when $XRANDR_PROBES
+# names files, with the next of them on each call (the last one repeats,
+# the count kept in $XRANDR_PROBES_SEEN); fails with $XRANDR_EXIT.  Any
+# other call is logged to $XRANDR_LOG, one call per line.
 case " $* " in
 *" --query "*)
     [ -z "${XRANDR_EXIT-}" ] || exit "$XRANDR_EXIT"
-    printf '%s\n' "${XRANDR_OUTPUT-}"
+    if [ -n "${XRANDR_PROBES-}" ]; then
+        n=$(cat -- "$XRANDR_PROBES_SEEN" 2> /dev/null || echo 0)
+        n=$((n + 1))
+        printf '%s\n' "$n" > "$XRANDR_PROBES_SEEN"
+        # shellcheck disable=SC2086  # a list of files
+        set -- $XRANDR_PROBES
+        [ "$n" -le "$#" ] || n=$#
+        shift $((n - 1))
+        cat -- "$1"
+    else
+        printf '%s\n' "${XRANDR_OUTPUT-}"
+    fi
     ;;
 *)
     printf '%s\n' "$*" >> "${XRANDR_LOG:-/dev/null}"

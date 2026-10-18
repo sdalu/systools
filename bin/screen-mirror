@@ -32,8 +32,8 @@
 #   -x  undo: targets off, source back to its preferred mode, no scaling
 #   -h  show this help
 #
-# -x is the quick way back; monitors-config restores the full configured
-# layout (external primary, internal below) for this location and dock state.
+# -x is the quick way back; screen-extend lays the outputs out side by
+# side instead (external primary, internal below by default).
 #
 # Exit: 0 done, 1 nothing to mirror to or no usable mode, 2 usage error.
 #
