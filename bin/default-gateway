@@ -14,6 +14,10 @@ set -eu
 
 prog=${0##*/}
 
+# ip(8) may live in /sbin or /usr/sbin, which Linux cron's PATH and
+# an unprivileged Linux user's leave out; route(8) is in /sbin.
+PATH=$PATH:/sbin:/usr/sbin
+
 usage() {
     cat <<EOF
 usage: $prog [-4|-6] [-f fib] [-i] [-s]
@@ -67,7 +71,7 @@ lookup_freebsd() {
     else
         set -- "$@" -inet
     fi
-    out=$(/sbin/route "$@" default 2> /dev/null) || return 0
+    out=$(route "$@" default 2> /dev/null) || return 0
     printf '%s\n' "$out" | parse_route_get
 }
 

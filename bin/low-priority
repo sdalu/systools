@@ -16,6 +16,9 @@
 set -eu
 
 prog=${0##*/}
+
+# idprio(1) lives in /usr/sbin, which a user's PATH may leave out.
+PATH=$PATH:/usr/sbin
 verbose=0
 
 usage() {
@@ -74,10 +77,10 @@ run() {
 # The scheduling tools differ per kernel; there is no portable flag.
 case "$(uname -s)" in
 FreeBSD)
-    if permitted /usr/sbin/idprio 30; then
-        set -- /usr/sbin/idprio 30 "$@"
+    if permitted idprio 30; then
+        set -- idprio 30 "$@"
     fi
-    run /usr/bin/nice -n 20 "$@"
+    run nice -n 20 "$@"
     ;;
 Linux)
     if permitted ionice -c 3; then
