@@ -92,6 +92,12 @@ check_eq "$out" "185.195.232.66 INSA" "no description: the WireGuard endpoint, p
 endpoint vpn0 '[2a03:1b20:3:f011::a01f]:51820'
 run vpn-status
 check_eq "$out" "2a03:1b20:3:f011::a01f INSA" "an IPv6 endpoint, brackets dropped"
+endpoint vpn0 '(none)'
+run vpn-status
+check_eq "$out" "vpn0 INSA" "a peer with no endpoint yet: the interface name"
+printf 'KEY1=\t(none)\nKEY2=\t192.0.2.7:51820\n' > "$WG_DIR/vpn0.endpoints"
+run vpn-status
+check_eq "$out" "192.0.2.7 INSA" "the first peer that has an endpoint"
 rm -f -- "$WG_DIR/vpn0.endpoints"
 run vpn-status
 check_eq "$out" "vpn0 INSA" "nothing else: the interface name"

@@ -16,7 +16,7 @@
 #     FreeBSD, the interface alias on Linux (ip link set IF alias ...);
 #   - for a tun or tap, the owning process's --authgroup, else its first
 #     non-option argument (the server), else its name;
-#   - for WireGuard, the first peer's endpoint address;
+#   - for WireGuard, the endpoint address of the first peer that has one;
 #   - the interface name.
 # A tunnel outside the default FIB (FreeBSD) or in a VRF (Linux) gets
 # /FIB or /VRF appended (mullvad/1).  A WireGuard tunnel with no
@@ -91,13 +91,15 @@ process_label() {
     printf '%s\n' "${server:-$comm}"
 }
 
-# The first peer's endpoint address, without the port.
+# The first peer's endpoint address, without the port; a peer that has
+# none yet (wg prints "(none)") is passed over.
 wg_label() {
-    wg show "$1" endpoints 2> /dev/null | awk 'NR == 1 {
+    wg show "$1" endpoints 2> /dev/null | awk '$2 != "" && $2 != "(none)" {
         address = $2
         sub(/:[0-9]+$/, "", address)
         gsub(/^\[|\]$/, "", address)
         print address
+        exit
     }'
 }
 
