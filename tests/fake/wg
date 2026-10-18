@@ -1,0 +1,27 @@
+#!/bin/sh
+# wg: answers "show IF endpoints" with the file $WG_DIR/IF.endpoints, and
+# "show IF latest-handshakes" with $WG_DIR/IF.latest-handshakes, whose
+# lines "key age" -- seconds ago, or "never" -- become timestamps.  With
+# $WG_EXIT set it fails as wg does without privilege.
+if [ -n "${WG_EXIT-}" ]; then
+    printf 'Unable to access interface: Operation not permitted\n' >&2
+    exit "$WG_EXIT"
+fi
+[ "${1-}" = show ] || exit 1
+f=$WG_DIR/$2.$3
+[ -r "$f" ] || exit 1
+case $3 in
+latest-handshakes)
+    now=$(date +%s)
+    while read -r key age; do
+        if [ "$age" = never ]; then
+            printf '%s\t0\n' "$key"
+        else
+            printf '%s\t%s\n' "$key" $((now - age))
+        fi
+    done < "$f"
+    ;;
+*)
+    cat -- "$f"
+    ;;
+esac

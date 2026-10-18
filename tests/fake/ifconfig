@@ -1,4 +1,13 @@
 #!/bin/sh
-# ifconfig: answers -l with $IFCONFIG_LIST.
-[ "${1-}" = -l ] || exit 1
-printf '%s\n' "${IFCONFIG_LIST-lo0}"
+# ifconfig: answers -l with $IFCONFIG_LIST, -g GROUP with the file
+# $IFCONFIG_DIR/group.GROUP, and IF with the file $IFCONFIG_DIR/IF; an
+# interface without a file does not exist.
+case ${1-} in
+-l) printf '%s\n' "${IFCONFIG_LIST-lo0}" ;;
+-g) [ ! -r "${IFCONFIG_DIR-}/group.$2" ] || cat -- "$IFCONFIG_DIR/group.$2" ;;
+*)
+    [ -r "${IFCONFIG_DIR-}/$1" ] ||
+        { printf "ifconfig: interface %s does not exist\n" "$1" >&2; exit 1; }
+    cat -- "$IFCONFIG_DIR/$1"
+    ;;
+esac

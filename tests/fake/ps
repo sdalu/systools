@@ -1,0 +1,5 @@
+#!/bin/sh
+# ps: answers "-p PID -o args=" with the file $PS_DIR/PID; a pid without a
+# file is no process.
+[ "${1-}" = -p ] && [ -r "${PS_DIR-}/$2" ] || exit 1
+cat -- "$PS_DIR/$2"

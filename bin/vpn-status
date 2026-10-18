@@ -1,0 +1,226 @@
+#!/bin/sh
+# vpn-status — list the VPN tunnels that are up, one word each
+# usage: vpn-status [-p]
+#
+#   -p  polybar: a dead tunnel in red (without the "!"), and a red "none"
+#       when there is no tunnel; the colour is $VPN_STATUS_RED, else
+#       polybar's colors.sh red ($VPN_STATUS_COLORS, default
+#       ~/.config/polybar/scripts/colors.sh), else #dc322f.
+#
+# A tunnel is a WireGuard, tun or tap interface that is UP and RUNNING:
+#   FreeBSD  every interface of the wg, tun, tap or vpn group;
+#   Linux    every interface sysfs says is wireguard, or has tun_flags
+#            ($SYSFS and $PROCFS, default /sys and /proc, move the roots).
+# Its label is, in order:
+#   - the first word of its description: ifconfig_IF_descr in rc.conf on
+#     FreeBSD, the interface alias on Linux (ip link set IF alias ...);
+#   - for a tun or tap, the owning process's --authgroup, else its first
+#     non-option argument (the server), else its name;
+#   - for WireGuard, the first peer's endpoint address;
+#   - the interface name.
+# A tunnel outside the default FIB (FreeBSD) or in a VRF (Linux) gets
+# /FIB or /VRF appended (mullvad/1).  A WireGuard tunnel with no
+# handshake in the last 3 minutes gets a trailing "!" (mullvad/1!): it is
+# configured, but nothing answers.  When wg cannot be asked -- Linux
+# wants root for it -- no "!" is given.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+readonly stale=180  # seconds; WireGuard re-handshakes every 2 minutes
+: "${SYSFS:=/sys}"
+: "${PROCFS:=/proc}"
+: "${VPN_STATUS_COLORS:=$HOME/.config/polybar/scripts/colors.sh}"
+
+# ifconfig(8) lives in /sbin, wg(8) in /usr/bin or /usr/local/bin.
+PATH=$PATH:/sbin:/usr/sbin:/usr/local/bin
+
+polybar=0
+while getopts ph opt; do
+    case $opt in
+    p) polybar=1 ;;
+    h) printf 'usage: %s [-p]\n' "$prog"; exit 0 ;;
+    *) printf 'usage: %s [-p]\n' "$prog" >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -gt 0 ]; then
+    printf 'usage: %s [-p]\n' "$prog" >&2
+    exit 2
+fi
+
+red=${VPN_STATUS_RED-}
+if [ "$polybar" -eq 1 ] && [ -z "$red" ] && [ -r "$VPN_STATUS_COLORS" ]; then
+    # shellcheck disable=SC1090,SC2154  # the colors file defines red
+    red=$(. "$VPN_STATUS_COLORS" && printf '%s' "$red")
+fi
+red=${red:-#dc322f}
+
+# label, in red for polybar, else with a trailing "!"
+dead() {
+    if [ "$polybar" -eq 1 ]; then
+        printf '%%{F%s}%s%%{F-}\n' "$red" "$1"
+    else
+        printf '%s!\n' "$1"
+    fi
+}
+
+# The process's --authgroup, else its first non-option argument, else
+# its name.
+process_label() {
+    local args comm server
+    args=$(ps -p "$1" -o args= 2> /dev/null) || return 0
+    set -f
+    # shellcheck disable=SC2086  # the command line, split into words
+    set -- $args
+    set +f
+    [ "$#" -gt 0 ] || return 0
+    comm=${1##*/}
+    shift
+    server=
+    while [ "$#" -gt 0 ]; do
+        case $1 in
+        --authgroup=*) printf '%s\n' "${1#*=}"; return 0 ;;
+        --authgroup) [ -z "${2-}" ] || { printf '%s\n' "$2"; return 0; } ;;
+        -*) ;;
+        *) [ -n "$server" ] || server=$1 ;;
+        esac
+        shift
+    done
+    printf '%s\n' "${server:-$comm}"
+}
+
+# The first peer's endpoint address, without the port.
+wg_label() {
+    wg show "$1" endpoints 2> /dev/null | awk 'NR == 1 {
+        address = $2
+        sub(/:[0-9]+$/, "", address)
+        gsub(/^\[|\]$/, "", address)
+        print address
+    }'
+}
+
+# Print alive, dead, or nothing when wg cannot be asked.
+wg_state() {
+    local shakes now
+    shakes=$(wg show "$1" latest-handshakes 2> /dev/null) || return 0
+    now=$(date +%s)
+    printf '%s\n' "$shakes" | awk -v now="$now" -v stale="$stale" '
+        $2 > 0 && now - $2 <= stale { alive = 1 }
+        END { print (alive ? "alive" : "dead") }'
+}
+
+# --- FreeBSD: interface groups and ifconfig(8) -------------------------
+
+# Print "name kind label fib" for each tunnel up, kind wg or tun.
+freebsd_tunnels() {
+    local seen ifc info flags groups kind label fib pid
+    seen=' '
+    for ifc in $(ifconfig -g wg 2> /dev/null; ifconfig -g tun 2> /dev/null
+                 ifconfig -g tap 2> /dev/null; ifconfig -g vpn 2> /dev/null); do
+        case $seen in *" $ifc "*) continue ;; esac
+        seen="$seen$ifc "
+        info=$(ifconfig "$ifc" 2> /dev/null) || continue
+        flags=$(printf '%s\n' "$info" | sed -n '1s/.*<\([^>]*\)>.*/,\1,/p')
+        case $flags in *,UP,*) ;; *) continue ;; esac
+        case $flags in *,RUNNING,*) ;; *) continue ;; esac
+        groups=" $(printf '%s\n' "$info" |
+            awk '$1 == "groups:" { $1 = ""; print }') "
+        case $groups in
+        *" wg "*) kind=wg ;;
+        *" tun "* | *" tap "*) kind=tun ;;
+        *) kind=other ;;
+        esac
+        label=$(printf '%s\n' "$info" |
+            awk '$1 == "description:" { print $2; exit }')
+        if [ -z "$label" ] && [ "$kind" = tun ]; then
+            pid=$(printf '%s\n' "$info" |
+                awk '/Opened by PID [0-9]+$/ { print $NF; exit }')
+            [ -z "$pid" ] || label=$(process_label "$pid")
+        fi
+        fib=$(printf '%s\n' "$info" | awk '$1 == "fib:" { print $2; exit }')
+        [ "$fib" != 0 ] || fib=
+        printf '%s %s %s %s\n' "$ifc" "$kind" "${label:--}" "${fib:--}"
+    done
+}
+
+# --- Linux: sysfs and procfs -----------------------------------------
+
+# The pid of the process holding tun/tap interface $1, from its fdinfo.
+linux_tun_owner() {
+    local f
+    for f in "$PROCFS"/[0-9]*/fdinfo/*; do
+        [ -r "$f" ] || continue
+        if grep -q "^iff:[[:space:]]*$1\$" "$f" 2> /dev/null; then
+            f=${f#"$PROCFS"/}
+            printf '%s\n' "${f%%/*}"
+            return 0
+        fi
+    done
+}
+
+linux_tunnels() {
+    local net ifc flags kind label fib pid master
+    for net in "$SYSFS"/class/net/*; do
+        [ -d "$net" ] || continue
+        ifc=${net##*/}
+        if grep -q '^DEVTYPE=wireguard$' "$net/uevent" 2> /dev/null; then
+            kind=wg
+        elif [ -e "$net/tun_flags" ]; then
+            kind=tun
+        else
+            continue
+        fi
+        flags=$(cat "$net/flags" 2> /dev/null) || continue
+        # IFF_UP is 0x1 and IFF_RUNNING 0x40
+        [ $((flags & 0x41)) -eq $((0x41)) ] || continue
+        label=$(cat "$net/ifalias" 2> /dev/null || :)
+        label=${label%%[[:space:]]*}
+        if [ -z "$label" ] && [ "$kind" = tun ]; then
+            pid=$(linux_tun_owner "$ifc")
+            [ -z "$pid" ] || label=$(process_label "$pid")
+        fi
+        fib=
+        if [ -e "$net/master" ]; then
+            master=$(cd -P -- "$net/master" 2> /dev/null && pwd) || master=
+            if [ -n "$master" ] &&
+                grep -q '^DEVTYPE=vrf$' "$master/uevent" 2> /dev/null; then
+                fib=${master##*/}
+            fi
+        fi
+        printf '%s %s %s %s\n' "$ifc" "$kind" "${label:--}" "${fib:--}"
+    done
+}
+
+# ---------------------------------------------------------------------
+
+case "$(uname -s)" in
+FreeBSD) tunnels=$(freebsd_tunnels) ;;
+Linux)   tunnels=$(linux_tunnels) ;;
+*)
+    printf '%s: unsupported platform: %s\n' "$prog" "$(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+list=
+while read -r ifc kind label fib; do
+    [ -n "$ifc" ] || continue
+    [ "$label" != - ] || label=
+    [ -n "$label" ] || [ "$kind" != wg ] || label=$(wg_label "$ifc")
+    label=${label:-$ifc}
+    [ "$fib" = - ] || label=$label/$fib
+    if [ "$kind" = wg ] && [ "$(wg_state "$ifc")" = dead ]; then
+        label=$(dead "$label")
+    fi
+    list="$list $label"
+done <<EOF
+$tunnels
+EOF
+
+list=${list# }
+if [ -z "$list" ] && [ "$polybar" -eq 1 ]; then
+    list="%{F$red}none%{F-}"
+fi
+printf '%s\n' "$list"

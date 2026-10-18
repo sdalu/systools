@@ -18,6 +18,7 @@ installed under a prefix; there is nothing to build.
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
 | `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `term-title` | set the terminal's window title or icon name (the window name under screen and tmux), or run a command under its own title and restore the old one | a terminal that speaks xterm's title sequences, or screen or tmux |
+| `vpn-status` | list the VPN tunnels that are up, one word each, marking a WireGuard tunnel that no longer answers; `-p` for polybar | `ifconfig` (FreeBSD) or sysfs (Linux), `wg` for WireGuard |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
 | `zfs-snapshot` | take today's dated snapshot of a dataset and expire old ones; meant to run once a day | `zfs` |
@@ -30,10 +31,10 @@ status is 0 on success, 1 on failure and 2 on a usage error, except for
 and return its own, and `is-docked`, which answers with 0 (docked) or 1
 (not).
 
-Where a tool calls `zfs`, `route`, `ip` or `idprio`, it adds the sbin
-directories they live in to the end of `PATH`, so it also works on Linux
-from cron, whose `PATH` leaves them out, and from an unprivileged
-account.
+Where a tool calls one kept in an sbin directory -- `zfs`, `route`,
+`ip`, `ifconfig`, `sysctl`, `idprio` -- it adds those directories to the
+end of `PATH`, so it also works on Linux from cron, whose `PATH` leaves
+them out, and from an unprivileged account.
 
 
 ## Installing
@@ -59,11 +60,11 @@ make tests SH=dash              # the suite, with the scripts run under dash
 
 `make check` needs `shellcheck`. `make tests` runs every tool against
 stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
-`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `uname` and the
-priority tools, and a sysfs tree for Linux, so it touches no pool, no
-network and no router, and it takes the FreeBSD and the Linux branch of
-each tool on either system. Each `tests/t-*.sh` names what it checks in
-its header and prints one line per check.
+`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `wg`, `ps`, `uname`
+and the priority tools, and a sysfs tree for Linux, so it touches no
+pool, no network and no router, and it takes the FreeBSD and the Linux
+branch of each tool on either system. Each `tests/t-*.sh` names what it
+checks in its header and prints one line per check.
 
 
 ## Known shortfalls
@@ -87,6 +88,12 @@ its header and prints one line per check.
 - `term-title` knows terminals by `TERM`; one outside its list is
   refused unless `-T` names the sequences to send. Restoring a title
   needs the terminal's title stack, which screen and tmux lack.
+- `vpn-status` marks an idle WireGuard tunnel dead too: without traffic
+  or `PersistentKeepalive`, a peer stops handshaking, and the mark cannot
+  tell that silence from a peer that is gone.
+- `vpn-status` on Linux needs root for two things: `wg` answers only
+  root, so a dead WireGuard tunnel is not marked, and the owner of a tun
+  device run by root is not visible, so it is labelled by its name.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
 - The suite covers the local half of `openwrt-acl`, not the script it
