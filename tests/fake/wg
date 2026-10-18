@@ -1,5 +1,6 @@
 #!/bin/sh
-# wg: answers "show IF endpoints" with the file $WG_DIR/IF.endpoints, and
+# wg: answers "show IF endpoints" with the file $WG_DIR/IF.endpoints,
+# "show IF persistent-keepalive" with $WG_DIR/IF.persistent-keepalive, and
 # "show IF latest-handshakes" with $WG_DIR/IF.latest-handshakes, whose
 # lines "key age" -- seconds ago, or "never" -- become timestamps.  With
 # $WG_EXIT set it fails as wg does without privilege.

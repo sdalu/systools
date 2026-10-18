@@ -19,16 +19,18 @@
 #   - for WireGuard, the endpoint address of the first peer that has one;
 #   - the interface name.
 # A tunnel outside the default FIB (FreeBSD) or in a VRF (Linux) gets
-# /FIB or /VRF appended (mullvad/1).  A WireGuard tunnel with no
-# handshake in the last 3 minutes gets a trailing "!" (mullvad/1!): it is
-# configured, but nothing answers.  When wg cannot be asked -- Linux
-# wants root for it -- no "!" is given.
+# /FIB or /VRF appended (mullvad/1).  A WireGuard tunnel gets a trailing
+# "!" (mullvad/1!) when it has a peer with PersistentKeepalive and no
+# peer has handshaken in the last 3 minutes plus that interval: it is
+# configured, but nothing answers.  Without keepalive an idle peer stops
+# handshaking, and silence says nothing, so such a tunnel is not marked;
+# nor is one wg cannot be asked about -- Linux wants root for it.
 # 'local' is not POSIX, but every shell this runs under has it
 # shellcheck disable=SC3043
 set -eu
 
 prog=${0##*/}
-readonly stale=180  # seconds; WireGuard re-handshakes every 2 minutes
+readonly stale=180  # seconds; a peer with traffic re-handshakes every 2 minutes
 : "${SYSFS:=/sys}"
 : "${PROCFS:=/proc}"
 : "${VPN_STATUS_COLORS:=$HOME/.config/polybar/scripts/colors.sh}"
@@ -103,14 +105,28 @@ wg_label() {
     }'
 }
 
-# Print alive, dead, or nothing when wg cannot be asked.
+# Print alive, dead, or nothing when it cannot be told: wg cannot be
+# asked, or no peer has PersistentKeepalive, so a quiet peer may only be
+# idle.  A keepalive peer sends at least every K seconds, so it
+# re-handshakes within 2 minutes plus K; any recent handshake is alive.
 wg_state() {
-    local shakes now
+    local keeps shakes now
+    keeps=$(wg show "$1" persistent-keepalive 2> /dev/null) || return 0
     shakes=$(wg show "$1" latest-handshakes 2> /dev/null) || return 0
     now=$(date +%s)
-    printf '%s\n' "$shakes" | awk -v now="$now" -v stale="$stale" '
+    printf '%s\n--\n%s\n' "$keeps" "$shakes" |
+        awk -v now="$now" -v stale="$stale" '
+        $0 == "--" { peers = 1; next }
+        !peers { keep[$1] = ($2 ~ /^[0-9]+$/) ? $2 + 0 : 0; next }
         $2 > 0 && now - $2 <= stale { alive = 1 }
-        END { print (alive ? "alive" : "dead") }'
+        keep[$1] > 0 {
+            judged = 1
+            if ($2 > 0 && now - $2 <= stale + keep[$1]) alive = 1
+        }
+        END {
+            if (alive) print "alive"
+            else if (judged) print "dead"
+        }'
 }
 
 # --- FreeBSD: interface groups and ifconfig(8) -------------------------

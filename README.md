@@ -109,9 +109,9 @@ line per check.
   unique: any network named like the one at home is home. The wired
   facts `-v` reports and the outside view of `external_view` are
   gathered for rules not yet written; no answer rests on them.
-- `vpn-status` marks an idle WireGuard tunnel dead too: without traffic
-  or `PersistentKeepalive`, a peer stops handshaking, and the mark cannot
-  tell that silence from a peer that is gone.
+- `vpn-status` never marks a WireGuard tunnel without
+  `PersistentKeepalive` dead: idle, a peer stops handshaking, and that
+  silence cannot be told from a peer that is gone.
 - `vpn-status` on Linux needs root for two things: `wg` answers only
   root, so a dead WireGuard tunnel is not marked, and the owner of a tun
   device run by root is not visible, so it is labelled by its name.

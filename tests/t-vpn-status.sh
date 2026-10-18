@@ -12,7 +12,8 @@ reset() {
     mkdir -p "$IFCONFIG_DIR" "$WG_DIR" "$PS_DIR"
     unset WG_EXIT VPN_STATUS_RED
 }
-# group NAME IF..., iface IF TEXT, shakes IF AGE, endpoint IF ADDRESS
+# group NAME IF..., iface IF TEXT, shakes IF AGE, keepalive IF SECONDS|off,
+# endpoint IF ADDRESS
 group() {
     g=$1
     shift
@@ -23,6 +24,9 @@ iface() {
 }
 shakes() {
     printf 'KEY= %s\n' "$2" > "$WG_DIR/$1.latest-handshakes"
+}
+keepalive() {
+    printf 'KEY=\t%s\n' "$2" > "$WG_DIR/$1.persistent-keepalive"
 }
 endpoint() {
     printf 'KEY=\t%s\n' "$2" > "$WG_DIR/$1.endpoints"
@@ -52,6 +56,7 @@ freebsd() {
     iface vpn0 "$mullvad"
     iface tun0 "$insa"
     shakes vpn0 30
+    keepalive vpn0 25
     printf 'openconnect --protocol=anyconnect --authgroup=INSA vpn.insa.fr\n' \
         > "$PS_DIR/94488"
 }
@@ -79,6 +84,26 @@ export VPN_STATUS_COLORS="$tmp/none"
 shakes vpn0 never
 run vpn-status
 check_eq "$out" "mullvad/1! INSA" "never a handshake: dead"
+keepalive vpn0 off
+run vpn-status
+check_eq "$out" "mullvad/1 INSA" "never a handshake, no keepalive: idle, no !"
+shakes vpn0 900
+run vpn-status
+check_eq "$out" "mullvad/1 INSA" "an old handshake, no keepalive: idle, no !"
+keepalive vpn0 300
+shakes vpn0 400
+run vpn-status
+check_eq "$out" "mullvad/1 INSA" "keepalive 300: 400 s is within 3 minutes plus it"
+shakes vpn0 500
+run vpn-status
+check_eq "$out" "mullvad/1! INSA" "keepalive 300: 500 s is not"
+printf 'KEY1=\toff\nKEY2=\t25\n' > "$WG_DIR/vpn0.persistent-keepalive"
+printf 'KEY1= 30\nKEY2= 900\n' > "$WG_DIR/vpn0.latest-handshakes"
+run vpn-status
+check_eq "$out" "mullvad/1 INSA" "any peer with a recent handshake: alive"
+rm -f -- "$WG_DIR/vpn0.persistent-keepalive"
+run vpn-status
+check_eq "$out" "mullvad/1 INSA" "keepalive cannot be asked: no !"
 export WG_EXIT=1
 run vpn-status
 check_eq "$out" "mullvad/1 INSA" "wg cannot be asked: no ! for it"
@@ -153,6 +178,7 @@ linux() {
     net wg0 0x90d1 wireguard          # UP, RUNNING, POINTOPOINT, NOARP
     printf 'mullvad (External VPN)\n' > "$SYSFS/class/net/wg0/ifalias"
     shakes wg0 30
+    keepalive wg0 25
     net tun0 0x10d1 tun
     mkdir -p "$PROCFS/4242/fdinfo" "$PROCFS/self/fdinfo"
     printf 'pos:\t0\nflags:\t02\nmnt_id:\t27\n' > "$PROCFS/4242/fdinfo/3"

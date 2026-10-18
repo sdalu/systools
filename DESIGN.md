@@ -121,9 +121,12 @@ restore runs from the EXIT trap, so Ctrl-C restores too.
 
 ## vpn-status: dead is not the same as unknown
 
-A WireGuard tunnel is marked dead when no peer has handshaken for three
-minutes: a tunnel carrying traffic re-handshakes every two, and one set
-with `PersistentKeepalive` never goes quiet. When
+A WireGuard tunnel is marked dead when it has a peer set with
+`PersistentKeepalive` and no peer has handshaken for three minutes plus
+that interval: a peer carrying traffic re-handshakes every two minutes,
+and keepalive is traffic. A tunnel without keepalive is not judged: idle,
+it stops handshaking, and the first version marked a healthy, idle
+Mullvad tunnel dead for exactly that. When
 `wg` cannot be asked at all -- Linux answers only root -- the tunnel is
 not marked: a status bar run as a user would otherwise show every tunnel
 dead. The labels are what an operator already wrote down somewhere: the
