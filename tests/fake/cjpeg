@@ -1,0 +1,17 @@
+#!/bin/sh
+# cjpeg: answers -version with $CJPEG_VERSION (libjpeg-turbo by default),
+# and encodes to -outfile with 100 bytes per point of -quality, logging
+# every call to $CJPEG_LOG.
+if [ "${1-}" = -version ]; then
+    printf '%s\n' "${CJPEG_VERSION:-libjpeg-turbo version 3.1.4}" >&2
+    exit 0
+fi
+printf '%s\n' "$*" >> "$CJPEG_LOG"
+while [ "$#" -gt 1 ]; do
+    case $1 in
+    -quality) quality=$2 ;;
+    -outfile) out=$2 ;;
+    esac
+    shift
+done
+head -c $((quality * 100)) /dev/zero > "$out"

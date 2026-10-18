@@ -1,0 +1,51 @@
+#!/bin/sh
+# pdftoppm: with -mono, the probe: one ROOT-N.pbm per page of
+# $PDFTOPPM_PAGES ("596x842 842x596 ..."), numbered with as many digits as
+# the page count has.  With -singlefile, the page as ROOT.ppm (ROOT.pgm
+# with -gray), its long edge the -scale-to value.  Every call is logged to
+# $PDFTOPPM_LOG; $PDFTOPPM_FAIL makes it fail.
+printf '%s\n' "$*" >> "$PDFTOPPM_LOG"
+if [ -n "${PDFTOPPM_FAIL-}" ]; then
+    printf 'Syntax Error: Couldn'"'"'t read xref table\n' >&2
+    exit 1
+fi
+for root; do :; done
+mode=''
+page=''
+scale=''
+ext=ppm
+magic=P6
+while [ "$#" -gt 2 ]; do
+    case $1 in
+    -mono) mode=probe ;;
+    -singlefile) mode=page ;;
+    -f) page=$2 ;;
+    -scale-to) scale=$2 ;;
+    -gray) ext=pgm magic=P5 ;;
+    esac
+    shift
+done
+# shellcheck disable=SC2086  # a list of page sizes
+set -- $PDFTOPPM_PAGES
+case $mode in
+probe)
+    n=0
+    digits=${#}
+    for size; do
+        n=$((n + 1))
+        f=$(printf '%s-%0*d.pbm' "$root" "$digits" "$n")
+        printf 'P4\n%s %s\n' "${size%x*}" "${size#*x}" > "$f"
+    done
+    ;;
+page)
+    shift $((page - 1))
+    w=${1%x*}
+    h=${1#*x}
+    if [ "$w" -ge "$h" ]; then
+        h=$((h * scale / w)) w=$scale
+    else
+        w=$((w * scale / h)) h=$scale
+    fi
+    printf '%s\n%s %s\n255\n' "$magic" "$w" "$h" > "$root.$ext"
+    ;;
+esac

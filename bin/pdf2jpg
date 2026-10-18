@@ -1,0 +1,364 @@
+#!/bin/sh
+# pdf2jpg — PDF pages to JPEG, at a pixel target and an optional byte cap
+# usage: pdf2jpg [-w px] [-x n] [-f n] [-l n] [-q q] [-s size] [-o dir]
+#                [-p name] [-n auto|always|never] [-e poppler|gs]
+#                [-i icc] [-g] [-L] [-c] file.pdf
+#
+# Each stage goes to the tool best at it:
+#   rasterise   pdftoppm (sharp text and vector anti-aliasing), or gs
+#               (-e gs: correct CMYK and ICC handling)
+#   downsample  magick, Lanczos, optionally in linear light (-L)
+#   encode      mozjpeg's cjpeg, else libjpeg's cjpeg, else magick
+# Only the tools a run needs are required.  A page is rendered once; the
+# quality search for -s re-encodes it, it does not re-render it.
+#
+# Each page is written as DIR/NAME-NN.jpg -- NAME.jpg for a one-page
+# document (-n always and -n never force the choice) -- and reported on
+# stdout as "path  WxH px  q=Q  N bytes".
+# Exit status: 0 success, 1 failure, 2 usage error, 3 written, but some
+# page stays over the -s cap even at the lowest quality.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+readonly floor=15   # the lowest quality the -s search goes down to
+
+usage() {
+    cat <<EOF
+usage: $prog [options] file.pdf
+  -w px      longest edge, in pixels (default 2000)
+  -x n       render at n times the target, then downsample (default 2)
+  -f n       first page (default 1)
+  -l n       last page (default the last)
+  -q q       quality, or the ceiling of the -s search (default 92)
+  -s size    largest file per page, e.g. 500k or 1.5m
+  -o dir     directory to write to (default .)
+  -p name    file name before -NN.jpg (default the PDF's)
+  -n mode    page number suffix: auto (default), always, never
+  -e engine  poppler (default, sharp) or gs (CMYK and ICC)
+  -i icc     output ICC profile (gs only)
+  -g         grayscale
+  -L         downsample in linear light (photographs)
+  -c         4:2:0 chroma subsampling (smaller, softer)
+  -h         show this help
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+bad() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 2
+}
+
+# positive N NAME — refuse what is not a positive integer
+positive() {
+    case $1 in
+    '' | *[!0-9]* | 0*) bad "$2 must be a positive integer: $1" ;;
+    esac
+}
+
+# The width and height of a PNM file, from its ASCII header: the magic,
+# then whitespace-separated numbers, with # comments to the end of line.
+pnm_dims() {
+    dd if="$1" bs=128 count=1 2> /dev/null | LC_ALL=C tr '\000' ' ' |
+        LC_ALL=C awk '
+            { sub(/#.*/, "") }
+            {
+                for (i = 1; i <= NF; i++) {
+                    if (!magic) { magic = $i; continue }
+                    if (w == "") { w = $i; continue }
+                    print w, $i; found = 1; exit
+                }
+            }
+            END { exit !found }'
+}
+
+# encode SRC DEST QUALITY — with the encoder this run found
+encode() {
+    case $encoder in
+    magick)
+        magick "$1" -quality "$3" -sampling-factor "$sampling" \
+            -interlace JPEG -define jpeg:optimize-coding=true -strip "$2"
+        ;;
+    *)
+        "$encoder" -quality "$3" -optimize -progressive \
+            -sample "$sampling" -outfile "$2" "$1"
+        ;;
+    esac 2> "$tmp/encode.err" && [ -s "$2" ] ||
+        die "$encoder: $(cat "$tmp/encode.err")"
+}
+
+size_of() {
+    local n
+    n=$(wc -c < "$1")
+    printf '%s\n' $((n))
+}
+
+# The highest quality from the floor to the ceiling whose file fits the
+# cap, by binary search; the floor when none does.
+best_quality() {
+    local low high mid best size
+    low=$floor
+    high=$quality
+    best=
+    while [ "$low" -le "$high" ]; do
+        mid=$(((low + high) / 2))
+        encode "$1" "$1.probe.jpg" "$mid"
+        size=$(size_of "$1.probe.jpg")
+        rm -f -- "$1.probe.jpg"
+        if [ "$size" -le "$max_bytes" ]; then
+            best=$mid
+            low=$((mid + 1))
+        else
+            high=$((mid - 1))
+        fi
+    done
+    printf '%s\n' "${best:-$floor}"
+}
+
+# render PAGE LONG-EDGE-PT — rasterise one page; prints the raster's path
+render() {
+    local raster="$tmp/raster.$ext" dpi
+    rm -f -- "$raster"
+    case $engine in
+    poppler)
+        set -- -f "$1" -l "$1" -singlefile -scale-to "$target_px" \
+            -aa yes -aaVector yes
+        [ "$gray" -eq 0 ] || set -- "$@" -gray
+        pdftoppm "$@" "$input" "$tmp/raster" 2> "$tmp/render.err"
+        ;;
+    gs)
+        dpi=$(awk -v px="$max_px" -v x="$oversample" -v pt="$2" \
+            'BEGIN { printf "%.4f", px * 72.0 * x / pt }')
+        local n="$1"
+        if [ "$gray" -eq 1 ]; then
+            set -- -sDEVICE=pgmraw
+        else
+            set -- -sDEVICE=ppmraw
+        fi
+        [ -z "$icc" ] ||
+            set -- "$@" -sOutputICCProfile="$icc" -dRenderIntent=1 \
+                -dOverrideICC
+        gs -q -dBATCH -dNOPAUSE -dSAFER -dUseCropBox -dTextAlphaBits=4 \
+            -dGraphicsAlphaBits=4 "$@" -r"$dpi" -dFirstPage="$n" \
+            -dLastPage="$n" -sOutputFile="$raster" "$input" \
+            2> "$tmp/render.err"
+        set -- "$n"
+        ;;
+    esac && [ -s "$raster" ] ||
+        die "page $1: $(cat "$tmp/render.err")"
+    printf '%s\n' "$raster"
+}
+
+# resample SRC — Lanczos down to the target; prints the result's path
+resample() {
+    local small="$tmp/small.$ext"
+    set -- "$1"
+    [ "$linear" -eq 0 ] || set -- "$@" -colorspace RGB
+    set -- "$@" -filter Lanczos -resize "${max_px}x${max_px}>"
+    if [ "$linear" -eq 1 ]; then
+        if [ "$gray" -eq 1 ]; then
+            set -- "$@" -colorspace Gray
+        else
+            set -- "$@" -colorspace sRGB
+        fi
+    fi
+    magick "$@" -strip "$small" 2> "$tmp/resample.err" && [ -s "$small" ] ||
+        die "magick: $(cat "$tmp/resample.err")"
+    printf '%s\n' "$small"
+}
+
+max_px=2000
+oversample=2.0
+first=
+last=
+quality=92
+max_bytes=
+outdir=.
+prefix=
+number=auto
+engine=poppler
+icc=
+gray=0
+linear=0
+sampling=1x1
+
+while getopts w:x:f:l:q:s:o:p:n:e:i:gLch opt; do
+    case $opt in
+    w) positive "$OPTARG" -w; max_px=$OPTARG ;;
+    x) oversample=$OPTARG ;;
+    f) positive "$OPTARG" -f; first=$OPTARG ;;
+    l) positive "$OPTARG" -l; last=$OPTARG ;;
+    q) quality=$OPTARG ;;
+    s)
+        max_bytes=$(printf '%s\n' "$OPTARG" | awk '
+            match($0, /^[0-9]+(\.[0-9]+)?[ \t]*[kKmM]?/) {
+                text = substr($0, 1, RLENGTH)
+                unit = tolower(substr(text, length(text)))
+                n = text + 0
+                if (unit == "k") n *= 1024
+                else if (unit == "m") n *= 1048576
+                printf "%d\n", int(n + 0.5)
+            }')
+        [ -n "$max_bytes" ] || bad "cannot parse size: $OPTARG"
+        ;;
+    o) outdir=$OPTARG ;;
+    p) prefix=$OPTARG ;;
+    n)
+        case $OPTARG in
+        auto | always | never) number=$OPTARG ;;
+        *) bad "-n takes auto, always or never, not: $OPTARG" ;;
+        esac
+        ;;
+    e)
+        case $OPTARG in
+        poppler | gs) engine=$OPTARG ;;
+        *) bad "-e takes poppler or gs, not: $OPTARG" ;;
+        esac
+        ;;
+    i) icc=$OPTARG ;;
+    g) gray=1 ;;
+    L) linear=1 ;;
+    c) sampling=2x2 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+input=$1
+
+case $quality in
+'' | *[!0-9]* | 0*) bad "-q must be a quality from 1 to 100: $quality" ;;
+esac
+[ "$quality" -le 100 ] || bad "-q must be a quality from 1 to 100: $quality"
+awk -v x="$oversample" 'BEGIN {
+    exit !(x ~ /^[0-9]+(\.[0-9]+)?$/ && x + 0 > 0) }' ||
+    bad "-x must be a positive number: $oversample"
+[ -z "$icc" ] || [ "$engine" = gs ] || bad "-i needs -e gs"
+[ -f "$input" ] && [ -r "$input" ] || die "cannot read $input"
+if [ -z "$prefix" ]; then
+    prefix=${input##*/}
+    case $prefix in
+    ?*.*) prefix=${prefix%.*} ;;
+    esac
+fi
+
+if [ "$gray" -eq 1 ]; then ext=pgm; else ext=ppm; fi
+resample=$(awk -v x="$oversample" -v l="$linear" \
+    'BEGIN { print (x + 0 > 1 || l) ? 1 : 0 }')
+target_px=$(awk -v px="$max_px" -v x="$oversample" \
+    'BEGIN { printf "%d\n", int(px * x + 0.5) }')
+
+# The encoder: mozjpeg's cjpeg, else libjpeg's, else magick.
+encoder=
+for e in mozjpeg-cjpeg mozcjpeg cjpeg; do
+    if command -v "$e" > /dev/null 2>&1; then
+        encoder=$e
+        break
+    fi
+done
+note=
+if [ -z "$encoder" ]; then
+    encoder=magick
+    note="no cjpeg found, encoding with magick: ~10-20% larger,"
+    note="$note no trellis quantisation"
+elif ! "$encoder" -version 2>&1 | grep -qi mozjpeg; then
+    note="cjpeg is libjpeg, not mozjpeg: expect ~10-20% larger files"
+    note="$note at the same quality"
+fi
+
+missing=
+need="pdftoppm"
+[ "$engine" = poppler ] || need="$need gs"
+[ "$encoder" != magick ] && [ "$resample" -eq 0 ] || need="$need magick"
+for tool in $need; do
+    command -v "$tool" > /dev/null 2>&1 || missing="$missing, $tool"
+done
+[ -z "$missing" ] || die "not in PATH: ${missing#, }"
+
+tmp=$(mktemp -d "${TMPDIR:-/tmp}/pdf2jpg.XXXXXX") ||
+    die "cannot create a temporary directory"
+trap 'rm -rf -- "$tmp"' EXIT
+trap 'printf "%s: interrupted\n" "$prog" >&2; exit 130' INT
+trap 'exit 1' HUP TERM
+
+# Page geometry: one cheap 72 dpi bilevel pass, where 1 px is 1 pt.  It
+# handles mixed page sizes and needs no pdfinfo.
+mkdir "$tmp/probe"
+pdftoppm -mono -r 72 "$input" "$tmp/probe/p" 2> "$tmp/probe.err" ||
+    die "probe failed: $(cat "$tmp/probe.err")"
+total=0
+for f in "$tmp"/probe/p-*.pbm; do
+    [ -e "$f" ] || continue
+    total=$((total + 1))
+    dims=$(pnm_dims "$f") || die "unreadable PNM header: $f"
+    printf '%s %s\n' "$total" "$dims" >> "$tmp/pages"
+done
+[ "$total" -gt 0 ] || die "probe failed: no pages rendered"
+
+first=${first:-1}
+last=${last:-$total}
+selected=$(awk -v f="$first" -v l="$last" '$1 >= f && $1 <= l' "$tmp/pages")
+[ -n "$selected" ] || die "page range selects nothing"
+count=$(printf '%s\n' "$selected" | grep -c .)
+
+case $number in
+always) numbered=1 ;;
+never)  numbered=0 ;;
+auto)   if [ "$total" -gt 1 ]; then numbered=1; else numbered=0; fi ;;
+esac
+if [ "$numbered" -eq 0 ] && [ "$count" -gt 1 ]; then
+    bad "-n never would write $count pages to one file"
+fi
+pad=${#total}
+[ "$pad" -ge 2 ] || pad=2
+
+[ -z "$note" ] || printf '%s: %s\n' "$prog" "$note" >&2
+mkdir -p -- "$outdir"
+
+over=
+while read -r page width height; do
+    if [ "$width" -gt "$height" ]; then long=$width; else long=$height; fi
+    raster=$(render "$page" "$long")
+    if [ "$resample" -eq 1 ]; then
+        source=$(resample "$raster")
+    else
+        source=$raster
+    fi
+    if [ "$numbered" -eq 1 ]; then
+        dest=$(printf '%s/%s-%0*d.jpg' "$outdir" "$prefix" "$pad" "$page")
+    else
+        dest=$outdir/$prefix.jpg
+    fi
+    if [ -n "$max_bytes" ]; then
+        q=$(best_quality "$source")
+    else
+        q=$quality
+    fi
+    encode "$source" "$dest" "$q"
+    bytes=$(size_of "$dest")
+    dims=$(pnm_dims "$source") || die "unreadable PNM header: $source"
+    printf '%s  %sx%s px  q=%s  %s bytes\n' "$dest" "${dims% *}" \
+        "${dims#* }" "$q" "$bytes"
+    if [ -n "$max_bytes" ] && [ "$bytes" -gt "$max_bytes" ]; then
+        over="$over$dest
+"
+    fi
+done <<EOF
+$selected
+EOF
+
+[ -n "$over" ] || exit 0
+printf '%s' "$over" | while IFS= read -r f; do
+    printf '%s: %s exceeds cap at lowest quality\n' "$prog" "$f" >&2
+done
+exit 3

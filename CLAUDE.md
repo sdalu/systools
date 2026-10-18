@@ -33,6 +33,12 @@ and runs none of the tools; `tests` runs them all against the stand-ins.
   that keeps a path in `$out` has it replaced by the tool's output, and
   writes files named after that output into the current directory --
   the repository root, when run from there.
+- **Write a test file with the editor, not `cat <<EOF` in the shell.**
+  Test files carry here-documents of their own; the outer one ends at
+  their first `EOF`, and the rest of the file runs as shell.
+- **FreeBSD sh's `command -v` takes one name.** `command -v a b` fails
+  there, so a probe written that way decides wrongly -- one here made a
+  test skip itself without saying why.
 - **A check that depends on the host fails on the other system** —
   whether gcc exists, which `make` is GNU. Assert what the command run
   under the tool sees, not what the tool did on the way there.

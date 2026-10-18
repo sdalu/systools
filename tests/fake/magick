@@ -1,0 +1,35 @@
+#!/bin/sh
+# magick: logs every call to $MAGICK_LOG.  Called to resize ("SRC ...
+# -resize WxH> ... DEST"), it writes DEST as a PNM header of SRC's
+# picture fitted into the box; called to encode to DEST.jpg, it writes
+# 100 bytes per point of -quality.
+printf '%s\n' "$*" >> "$MAGICK_LOG"
+src=$1
+for dest; do :; done
+box=''
+quality=''
+while [ "$#" -gt 0 ]; do
+    case $1 in
+    -resize) box=${2%>} ;;
+    -quality) quality=$2 ;;
+    esac
+    shift
+done
+case $dest in
+*.jpg)
+    head -c $((quality * 100)) /dev/zero > "$dest"
+    ;;
+*)
+    # shellcheck disable=SC2046  # the header's words
+    set -- $(dd if="$src" bs=64 count=1 2> /dev/null | tr '\n' ' ')
+    w=$2
+    h=$3
+    max=${box%x*}
+    if [ "$w" -ge "$h" ] && [ "$w" -gt "$max" ]; then
+        h=$((h * max / w)) w=$max
+    elif [ "$h" -gt "$max" ]; then
+        w=$((w * max / h)) h=$max
+    fi
+    printf '%s\n%s %s\n255\n' "$1" "$w" "$h" > "$dest"
+    ;;
+esac

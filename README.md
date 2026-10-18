@@ -13,6 +13,7 @@ installed under a prefix; there is nothing to build.
 | `is-docked` | tell whether a laptop sits in its dock: on external power, with a USB network interface, and with an external screen | `sysctl` and `ifconfig`, with drm-kmod for the screen (else `xrandr` under X) on FreeBSD; sysfs only on Linux |
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
+| `pdf2jpg` | turn PDF pages into JPEGs at a pixel size, optionally under a byte cap per page, each stage done by the tool best at it | `pdftoppm`; `magick` to downsample; `cjpeg` (mozjpeg best) or `magick` to encode; `gs` for `-e gs` |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
 | `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
@@ -28,8 +29,9 @@ each script says the rest -- configuration, defaults, platform
 differences. Options are short ones only (`-r`, not `--recursive`). Exit
 status is 0 on success, 1 on failure and 2 on a usage error, except for
 `low-priority`, `with-gnu-make` and `term-title -e`, which run a command
-and return its own, and `is-docked`, which answers with 0 (docked) or 1
-(not).
+and return its own, `is-docked`, which answers with 0 (docked) or 1
+(not), and `pdf2jpg`, which exits 3 when a page stays over its byte
+cap.
 
 Where a tool calls one kept in an sbin directory -- `zfs`, `route`,
 `ip`, `ifconfig`, `sysctl`, `idprio` -- it adds those directories to the
@@ -60,11 +62,12 @@ make tests SH=dash              # the suite, with the scripts run under dash
 
 `make check` needs `shellcheck`. `make tests` runs every tool against
 stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
-`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `wg`, `ps`, `uname`
-and the priority tools, and a sysfs tree for Linux, so it touches no
-pool, no network and no router, and it takes the FreeBSD and the Linux
-branch of each tool on either system. Each `tests/t-*.sh` names what it
-checks in its header and prints one line per check.
+`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `wg`, `ps`,
+`pdftoppm`, `magick`, `cjpeg`, `uname` and the priority tools, and a
+sysfs tree for Linux, so it touches no pool, no network and no router,
+and it takes the FreeBSD and the Linux branch of each tool on either
+system. Each `tests/t-*.sh` names what it checks in its header and
+prints one line per check.
 
 
 ## Known shortfalls

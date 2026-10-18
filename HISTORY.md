@@ -19,11 +19,14 @@ Re-proposing a gem means Ruby-only tools, or every user installing with
 
 ## Ruby implementations
 
-`pushover`, `zfs-snapshot` and `zfs-prune-snapshots` were Ruby, the last
-two with the `pastel`, `tty-logger` and `tty-spinner` gems for their
-output. Every host running them needed Ruby and those gems, installed
-where the user cron runs as would find them. They were rewritten in sh,
-and the spinner and colours became plain `-v` lines.
+`pushover`, `zfs-snapshot`, `zfs-prune-snapshots` and `pdf2jpg` were
+Ruby, the zfs tools with the `pastel`, `tty-logger` and `tty-spinner`
+gems for their output, `pdf2jpg` needing Ruby 3.4 for `it`. Every host
+running them needed Ruby and those gems, installed where the user cron
+runs as would find them. They were rewritten in sh, and the spinner and
+colours became plain `-v` lines. `pdf2jpg` was checked by running both
+versions over the same eight cases of options on two PDFs: the JPEGs
+came out byte-identical.
 
 
 ## Expiring one six-month date per run
