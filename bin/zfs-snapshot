@@ -15,7 +15,7 @@
 # shellcheck disable=SC3043
 set -eu
 
-readonly version=0.2.0
+readonly version=0.2.1
 prog=${0##*/}
 
 # zfs(8) lives in /sbin or /usr/sbin, which Linux cron's PATH and
@@ -57,6 +57,19 @@ die() {
 # Howard Hinnant's civil calendar algorithms: date(1) has no date-math
 # flag common to FreeBSD (-v) and GNU (-d).
 
+# Print a decimal number without its leading zeros: $(( )) reads 0999
+# as an octal number, and 0999 is not one.
+decimal() {
+    local n="$1"
+    while :; do
+        case $n in
+            0?*) n=${n#0} ;;
+            *)   break ;;
+        esac
+    done
+    printf '%s\n' "$n"
+}
+
 # Print the day number of YYYY-MM-DD.
 day_of() {
     local y m d era yoe doy
@@ -64,8 +77,9 @@ day_of() {
     m=${1#*-}
     d=${m#*-}
     m=${m%%-*}
-    m=${m#0}
-    d=${d#0}
+    y=$(decimal "$y")
+    m=$(decimal "$m")
+    d=$(decimal "$d")
     y=$((y - (m <= 2)))
     era=$((y / 400))
     yoe=$((y - era * 400))
@@ -103,8 +117,9 @@ months_before() {
     m=${date#*-}
     d=${m#*-}
     m=${m%%-*}
-    m=${m#0}
-    d=${d#0}
+    y=$(decimal "$y")
+    m=$(decimal "$m")
+    d=$(decimal "$d")
     m=$((y * 12 + m - 1 - $2))
     y=$((m / 12))
     m=$((m % 12 + 1))

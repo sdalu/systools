@@ -9,7 +9,7 @@
 # after them.
 calendar() {
     {
-        sed -n '/^day_of()/,/^}/p;/^date_of()/,/^}/p
+        sed -n '/^decimal()/,/^}/p;/^day_of()/,/^}/p;/^date_of()/,/^}/p
                 /^weekday_of()/,/^}/p;/^months_before()/,/^}/p' \
             "$top/bin/zfs-snapshot"
         cat

@@ -78,6 +78,11 @@ pool
 run zfs-snapshot tank/fs
 check_eq "$(state)" "$(date +%Y-%m-%d) " "no -t: today's date"
 
+pool
+run zfs-snapshot -n -t 0999-01-01 tank/fs
+check_rc 0 "a year with a leading zero: not read as octal"
+check_in "$err" "tank/fs@0999-01-01" "a year with a leading zero: the snapshot named as given"
+
 for args in '-t 2026-02-30 tank/fs' '-t 2026-13-01 tank/fs' \
     '-t 26-1-1 tank/fs' '-p hourly tank/fs' '' 'tank/fs tank/fs' \
     '--recursive tank/fs' '-z tank/fs'; do
