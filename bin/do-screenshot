@@ -18,7 +18,8 @@
 # clipboard with xclip and announced with notify-send, each skipped with
 # a word on stderr when missing.
 # Exit status: 0 success or menu dismissed, 1 failure (an area selection
-# cancelled included), 2 usage error.
+# cancelled, or an answer typed into the menu that is no mode, included),
+# 2 usage error.
 # 'local' is not POSIX, but every shell this runs under has it
 # shellcheck disable=SC3043
 set -eu
@@ -58,6 +59,8 @@ menu() {
     Area) printf 'area\n' ;;
     Window) printf 'window\n' ;;
     'Window, delayed') printf 'delay\n' ;;
+    '') ;;
+    *) die "not a mode: $chosen" ;;
     esac
 }
 
@@ -120,10 +123,13 @@ case $# in
 2)
     mode=$1 delay=$2
     case $mode:$delay in
-    delay:*[!0-9]* | delay: | delay:0) usage >&2; exit 2 ;;
+    delay:*[!0-9]* | delay:) usage >&2; exit 2 ;;
     delay:*) ;;
     *) usage >&2; exit 2 ;;
     esac
+    # decimal: $(( )) would read 010 as octal and refuse 08
+    delay=${delay#"${delay%%[!0]*}"}
+    [ -n "$delay" ] || { usage >&2; exit 2; }
     ;;
 *) usage >&2; exit 2 ;;
 esac
@@ -133,19 +139,12 @@ case $mode in
 esac
 
 if [ -z "$mode" ]; then
-    mode=$(menu)
+    mode=$(menu) || exit 1
     [ -n "$mode" ] || exit 0
 fi
 
 have maim || die "maim is not installed"
 mkdir -p -- "$dir" || die "cannot create $dir"
-base=$dir/Screenshot_$(date +%Y-%m-%d-%H-%M-%S)
-file=$base.png
-n=1
-while [ -e "$file" ]; do
-    n=$((n + 1))
-    file=$base-$n.png
-done
 
 nid=
 case $mode in
@@ -161,6 +160,17 @@ delay)
     set -- -i "$win"
     ;;
 esac
+
+# The name is taken by creating the file under noclobber, so a second
+# shot in the same second cannot pick it between the test and maim.
+base=$dir/Screenshot_$(date +%Y-%m-%d-%H-%M-%S)
+file=$base.png
+n=1
+until (set -C; : > "$file") 2> /dev/null; do
+    [ -e "$file" ] || die "cannot create $file"
+    n=$((n + 1))
+    file=$base-$n.png
+done
 if ! maim -u -f png "$@" "$file"; then
     rm -f -- "$file"
     die "maim took no screenshot"

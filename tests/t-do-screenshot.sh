@@ -92,6 +92,13 @@ check_rc 0 "menu dismissed: exit 0"
 check_eq "$(log "$MAIM_LOG")" "" "menu dismissed: maim not called"
 check_eq "$out" "" "menu dismissed: no path"
 check_eq "$(count_png "$pics")" "$before" "menu dismissed: no file"
+export ROFI_PICK=banana
+before=$(count_png "$pics")
+ds_ -d "$pics"
+unset ROFI_PICK
+check_rc 1 "menu, an answer typed that is no mode: exit 1"
+check_in "$err" "not a mode: banana" "menu, an answer typed: said so"
+check_eq "$(count_png "$pics")" "$before" "menu, an answer typed: no file"
 ds_ -d "$pics" window
 check_eq "$(log "$ROFI_LOG")" "" "a mode given: no menu"
 
@@ -134,7 +141,29 @@ check_in "$(log "$NOTIFY_LOG")" "$(printf -- '-r\n77\n-h\nstring:image-path:%s' 
     "delay 1: the result replaces the countdown"
 check_eq "$(log "$MAIM_LOG")" "-u -f png -i 4711 $out" "delay 1: maim, the active window"
 
-for args in 'bogus' 'delay x' 'delay 0' 'delay -1' 'window 3' 'delay 1 2' '-z'; do
+# A leading zero is decimal, not octal: 010 is ten seconds, 08 is eight.
+# sleep is stood in for here alone, so the countdown costs no time.
+mkdir -p "$tmp/fastsleep"
+cat > "$tmp/fastsleep/sleep" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >> "$SLEEP_LOG"
+EOF
+chmod 755 "$tmp/fastsleep/sleep"
+export SLEEP_LOG="$tmp/sleep.log"
+for args in '08 8' '010 10'; do
+    : > "$SLEEP_LOG"
+    PATH=$tmp/fastsleep:$fakes:$ORIG_PATH
+    ds_ -d "$pics" delay "${args% *}"
+    PATH=$fakes:$ORIG_PATH
+    check_rc 0 "delay ${args% *}: succeeds"
+    check_in "$(log "$NOTIFY_LOG")" "Capturing the active window in ${args#* }s" \
+        "delay ${args% *}: ${args#* } seconds"
+    check_eq "$(grep -c '^1$' "$SLEEP_LOG")" "${args#* }" \
+        "delay ${args% *}: ${args#* } one-second waits"
+done
+unset SLEEP_LOG
+
+for args in 'bogus' 'delay x' 'delay 0' 'delay 00' 'delay -1' 'window 3' 'delay 1 2' '-z'; do
     # shellcheck disable=SC2086  # each case is a word list
     ds_ -d "$pics" $args
     check_rc 2 "refuses [$args] as a usage error"
