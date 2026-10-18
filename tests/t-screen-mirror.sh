@@ -44,9 +44,14 @@ check_in "$out" "--output eDP-1 --mode 1920x1200 --pos 0x0 --scale 1x1 --primary
 run screen-mirror -n -m 1280x720
 check_in "$out" "--output DP-1 --mode 1280x720" "-m: the source at the forced mode"
 check_in "$out" "--output eDP-1 --mode 1280x720" "-m: the target at the forced mode"
-run screen-mirror -n -m 1366x768
+run screen-mirror -n -m 2560x1440
 check_rc 1 "-m with a mode a target lacks: exit 1"
-check_in "$err" "eDP-1: does not support 1366x768" "-m with a mode a target lacks: said so"
+check_in "$err" "eDP-1: does not support 2560x1440" "-m with a mode a target lacks: said so"
+run screen-mirror -n -m 1400x1050
+check_rc 1 "-m with a mode the source lacks: exit 1"
+check_in "$err" "DP-1: does not support 1400x1050" "-m with a mode the source lacks: said so"
+run screen-mirror -n -k -m 1400x1050
+check_rc 1 "-k -m with a mode the source lacks: exit 1"
 
 run screen-mirror -n -x
 check_eq "$out" "xrandr --output DP-1 --mode 2560x1440 --scale 1x1 --pos 0x0 --primary --output eDP-1 --off" \

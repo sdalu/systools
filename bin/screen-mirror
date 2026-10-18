@@ -241,8 +241,13 @@ TARGETS
         || die "nothing to mirror to: $source is the only connected output"
     log "targets: $(printf '%s\n' "$targets" | tr '\n' ' ')"
 
-    # A forced mode is taken as given; otherwise look for a shared one, and
-    # fall back to scaling when the outputs have nothing in common.
+    # A forced mode is checked against the source here and against each
+    # target below; otherwise look for a shared one, and fall back to
+    # scaling when the outputs have nothing in common.
+    if [ -n "$mode" ]; then
+        modes_of "$source" | grep -q -x -e "$mode" \
+            || die "$source: does not support $mode"
+    fi
     if [ -z "$mode" ] && [ "$keep" -eq 0 ]; then
         best=$(common_modes "$source
 $targets" | largest_mode)
