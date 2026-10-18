@@ -178,7 +178,7 @@ main() {
     esac
 
     case $SCREEN_EXTEND_SETTLE in
-        '' | *[!0-9.]* | *.*.*)
+        '' | . | *[!0-9.]* | *.*.*)
             warn "SCREEN_EXTEND_SETTLE: not a number of seconds"; bad_usage ;;
     esac
     command -v "$XRANDR" >/dev/null 2>&1 || die "$XRANDR: not found"

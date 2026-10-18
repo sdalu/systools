@@ -132,9 +132,11 @@ for args in '-m a1x1b' '-m 1920x' '-p sideways' 'extra' '-z'; do
     check_rc 2 "refuses [$args] as a usage error"
     check_eq "$(called)" "" "refuses [$args]: xrandr not told anything"
 done
-export SCREEN_EXTEND_SETTLE=soon
-se
-check_rc 2 "SCREEN_EXTEND_SETTLE not a number: a usage error"
+for settle in soon . 1.2.3; do
+    export SCREEN_EXTEND_SETTLE=$settle
+    se
+    check_rc 2 "SCREEN_EXTEND_SETTLE=$settle: a usage error"
+done
 export SCREEN_EXTEND_SETTLE=0
 run screen-extend -h
 check_rc 0 "-h: help"
