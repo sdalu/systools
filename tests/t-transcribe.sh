@@ -94,6 +94,36 @@ unset OVH_AI_TOKEN
 tr_ -q "$clip"
 check_rc 1 "no token anywhere: exit 1"
 check_in "$err" "no API token" "no token anywhere: said so"
+
+# aichat's clients are an indented list: the OVH client ends at the next
+# item, so a key further down belongs to someone else.
+mkdir -p "$HOME/.config/aichat"
+cat > "$HOME/.config/aichat/config.yaml" <<'EOF'
+clients:
+  - type: openai-compatible
+    name: OVH
+    api_base: https://example.invalid
+  - type: openai
+    name: other
+    api_key: not.ovh
+EOF
+tr_ -q "$clip"
+check_rc 1 "aichat: the OVH client has no key: exit 1"
+check_eq "$(argv)" "" "aichat: another client's key is never sent"
+cat > "$HOME/.config/aichat/config.yaml" <<'EOF'
+clients:
+- type: openai
+  api_key: not.ovh
+  name: other
+- name: OVH
+  models:
+    - name: m
+  api_key: from.aichat
+EOF
+tr_ -q "$clip"
+check_in "$(cat "$CURL_CONFIG")" "Bearer from.aichat" \
+    "aichat: the OVH client's key, past a nested list"
+rm -f -- "$HOME/.config/aichat/config.yaml"
 printf 'machine oai.endpoints.kepler.ai.cloud.ovh.net login x password from.authinfo\n' \
     > "$HOME/.authinfo"
 tr_ -q "$clip"

@@ -114,19 +114,31 @@ usage() {
 }
 
 # Convenience fallback: the api_key of the openai-compatible client named
-# OVH. Keyed on the preceding "name: OVH" so the other clients' keys in the
-# same file are never picked up.
+# OVH. The client is the list item holding "name: OVH", however deep the
+# list is indented; it ends at the next line indented no further than its
+# dash, so the other clients' keys in the same file are never picked up.
 aichat_token() {
     [ -r "$AICHAT_CONFIG" ] || return 1
     awk '
-        /^-[[:space:]]/                            { ovh = 0 }
-        /^[[:space:]]*name:[[:space:]]*OVH[[:space:]]*$/ { ovh = 1 }
-        ovh && /^[[:space:]]*api_key:[[:space:]]/  {
-            sub(/^[[:space:]]*api_key:[[:space:]]*/, "")
-            print
+        /^[[:space:]]*(#|$)/ { next }
+        {
+            match($0, /^ */)
+            indent = RLENGTH
+            line = substr($0, indent + 1)
+        }
+        ovh && indent <= item { ovh = 0 }
+        line ~ /^-[[:space:]]/ {
+            dash = indent
+            line = substr(line, 2)
+            sub(/^[[:space:]]*/, "", line)
+        }
+        line ~ /^name:[[:space:]]*OVH[[:space:]]*$/ { ovh = 1; item = dash }
+        ovh && line ~ /^api_key:[[:space:]]/ {
+            sub(/^api_key:[[:space:]]*/, "", line)
+            print line
             exit
         }
-    ' "$AICHAT_CONFIG"
+    ' dash=-1 item=-1 "$AICHAT_CONFIG"
 }
 
 # The password of the first ~/.authinfo, then ~/.netrc, entry for the AI
