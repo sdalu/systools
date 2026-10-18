@@ -18,7 +18,7 @@
 # shellcheck disable=SC3043
 set -eu
 
-readonly version=0.2.0
+readonly version=0.2.1
 readonly api=https://api.pushover.net/1/messages.json
 prog=${0##*/}
 : "${PUSHOVER_CONFIG:=$HOME/.pushover}"
@@ -116,6 +116,10 @@ case $1 in
 *:*)
     user=${1%%:*}
     app=${1#*:}
+    if [ -z "$user" ] || [ -z "$app" ]; then
+        printf '%s: USER:APP needs both: %s\n' "$prog" "$1" >&2
+        exit 2
+    fi
     ;;
 *)
     user=$(config user '')

@@ -91,6 +91,14 @@ check_rc 1 "no configuration: exit 1"
 check_in "$err" "not found" "no configuration: said so"
 export PUSHOVER_CONFIG="$tmp/pushover.yml"
 
+# An empty USER or APP must not fall into the default-user lookup, which
+# would hand back a key's name as if it were its token.
+for target in 'alice:' ':sauron' ':'; do
+    send "$target" 'm'
+    check_rc 2 "refuses [$target]: an empty user or app is a usage error"
+    check_eq "$(argv)" "" "refuses [$target]: curl not run"
+done
+
 send sauron ''
 check_rc 1 "empty message: exit 1"
 for args in 'sauron' '' 'a b c' '-z sauron m'; do
