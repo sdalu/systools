@@ -1,0 +1,5 @@
+#!/bin/sh
+# qrencode: records its arguments in $QRENCODE_ARGV, one per line, and
+# prints "QR".
+printf '%s\n' "$@" > "$QRENCODE_ARGV"
+printf 'QR\n'

@@ -14,6 +14,7 @@ installed under a prefix; there is nothing to build.
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
+| `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
 | `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
@@ -55,11 +56,11 @@ make tests SH=dash              # the suite, with the scripts run under dash
 
 `make check` needs `shellcheck`. `make tests` runs every tool against
 stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
-`ssh`, `sysctl`, `ifconfig`, `xrandr`, `uname` and the priority tools,
-and a sysfs tree for Linux, so it touches no pool, no network and no
-router, and it takes the FreeBSD and the Linux branch of each tool on
-either system. Each `tests/t-*.sh` names what it checks in its header
-and prints one line per check.
+`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `uname` and the
+priority tools, and a sysfs tree for Linux, so it touches no pool, no
+network and no router, and it takes the FreeBSD and the Linux branch of
+each tool on either system. Each `tests/t-*.sh` names what it checks in
+its header and prints one line per check.
 
 
 ## Known shortfalls
@@ -81,5 +82,5 @@ and prints one line per check.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
 - The suite covers the local half of `openwrt-acl`, not the script it
-  runs on the router, and not `with-gnu-make`'s `gcc` shim. Nothing has
-  been run under BusyBox.
+  runs on the router, not `with-gnu-make`'s `gcc` shim, and not `qr`
+  drawing in a terminal. Nothing has been run under BusyBox.

@@ -1,0 +1,94 @@
+#!/bin/sh
+# qr — encode text as a QR code: in the terminal, or as an image
+# usage: qr [-o file] [-t type] [-l level] [-s size] [text...]
+#
+# The text is the arguments joined by spaces, or else stdin with its
+# trailing newlines dropped.  Without -o, the code is drawn in the
+# terminal when stdout is one, and written as SVG otherwise, so
+# `qr url > code.svg` works.  With -o, the type follows the file's
+# extension (.svg .png .eps .xpm; anything else needs -t).  SVG is
+# written compact: one path, run-length encoded, no XML header.
+# Exit status: 0 success, 1 failure, 2 usage error.
+set -eu
+
+prog=${0##*/}
+readonly types='PNG PNG32 EPS SVG XPM ANSI ANSI256 ASCII ASCIIi UTF8 UTF8i
+    ANSIUTF8 ANSIUTF8i ANSI256UTF8'
+
+usage() {
+    cat <<EOF
+usage: $prog [-o file] [-t type] [-l level] [-s size] [text...]
+  -o file   write to FILE ("-" is stdout); the type follows its extension
+  -t type   SVG, PNG, PNG32, EPS, XPM, or for a terminal UTF8, UTF8i,
+            ANSIUTF8, ANSIUTF8i, ANSI256UTF8, ANSI, ANSI256, ASCII, ASCIIi
+  -l level  error correction: L, M, Q (default) or H
+  -s size   pixels per module, for image types (default 5)
+  -h        show this help
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+bad() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 2
+}
+
+output=
+type=
+level=Q
+size=5
+while getopts o:t:l:s:h opt; do
+    case $opt in
+    o) output=$OPTARG ;;
+    t) type=$OPTARG ;;
+    l) level=$OPTARG ;;
+    s) size=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+case $level in
+[LMQHlmqh]) ;;
+*) bad "level must be L, M, Q or H: $level" ;;
+esac
+case $size in
+'' | *[!0-9]* | 0*) bad "size must be a positive number: $size" ;;
+esac
+
+if [ -z "$type" ]; then
+    case $output in
+    '')
+        if [ -t 1 ]; then type=UTF8; else type=SVG; fi
+        ;;
+    -)    type=SVG ;;
+    *.[Ss][Vv][Gg]) type=SVG ;;
+    *.[Pp][Nn][Gg]) type=PNG ;;
+    *.[Ee][Pp][Ss]) type=EPS ;;
+    *.[Xx][Pp][Mm]) type=XPM ;;
+    *) bad "cannot tell the type of $output: give -t" ;;
+    esac
+fi
+known=
+for t in $types; do
+    [ "$t" != "$type" ] || known=1
+done
+[ -n "$known" ] || bad "unknown type: $type, see -h"
+
+if [ "$#" -gt 0 ]; then
+    text=$*
+else
+    text=$(cat)
+fi
+[ -n "$text" ] || die "nothing to encode"
+
+command -v qrencode > /dev/null 2>&1 || die "qrencode is required"
+
+set -- -t "$type" -l "$level" -s "$size" -o "${output:--}"
+[ "$type" != SVG ] || set -- "$@" --rle --svg-path --inline
+qrencode "$@" -- "$text"
