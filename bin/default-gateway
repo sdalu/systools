@@ -1,0 +1,133 @@
+#!/bin/sh
+# default-gateway — print the gateway of the default route
+# usage: default-gateway [-4|-6] [-f fib] [-i] [-s]
+#
+# FreeBSD asks the routing table with route(8), Linux with ip(8).  An
+# IPv6 link-local gateway keeps its %interface scope on both, so the
+# output can be used as is.  A default route with no gateway (a VPN
+# tunnel, say) prints its interface instead, in both columns with -i.
+# Exit status: 0 found, 1 no default route (or unsupported platform),
+# 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+
+usage() {
+    cat <<EOF
+usage: $prog [-4|-6] [-f fib] [-i] [-s]
+  -4      IPv4 default route (default)
+  -6      IPv6 default route
+  -f fib  look in this FIB (FreeBSD) or routing table (Linux)
+  -i      also print the outgoing interface
+  -s      no trailing newline
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+# Print "gateway interface" from route(8) output on stdin; a route
+# through an interface alone has no gateway line, so gateway is empty.
+parse_route_get() {
+    awk '$1 == "gateway:"   { gw = $2 }
+         $1 == "interface:" { dev = $2 }
+         END { if (gw != "" || dev != "") print gw, dev }'
+}
+
+# Print "gateway interface" from the first `ip route` line naming
+# either (the one in use: lower metrics come first).  Gateway is empty
+# for "default dev wg0"; multipath routes list their nexthops on
+# "nexthop via ..." lines, and an IPv4 route over an IPv6 nexthop reads
+# "via inet6 <addr>".
+parse_ip_route() {
+    awk '{
+        gw = ""; dev = ""
+        for (i = 1; i < NF; i++) {
+            if ($i == "via") {
+                gw = $(i + 1)
+                if (gw == "inet" || gw == "inet6") gw = $(i + 2)
+            } else if ($i == "dev") {
+                dev = $(i + 1)
+            }
+        }
+        if (gw != "" || dev != "") { print gw, dev; exit }
+    }'
+}
+
+lookup_freebsd() {
+    local out
+    set -- -n get
+    [ -z "$fib" ] || set -- "$@" -fib "$fib"
+    if [ "$family" = 6 ]; then
+        set -- "$@" -inet6
+    else
+        set -- "$@" -inet
+    fi
+    out=$(/sbin/route "$@" default 2> /dev/null) || return 0
+    printf '%s\n' "$out" | parse_route_get
+}
+
+lookup_linux() {
+    local out
+    set -- "-$family" route show default
+    [ -z "$fib" ] || set -- "$@" table "$fib"
+    out=$(ip "$@" 2> /dev/null) || return 0
+    printf '%s\n' "$out" | parse_ip_route
+}
+
+family=4
+fib=
+show_iface=0
+newline=1
+
+while getopts 46f:ish opt; do
+    case $opt in
+    4) family=4 ;;
+    6) family=6 ;;
+    f) fib=$OPTARG ;;
+    i) show_iface=1 ;;
+    s) newline=0 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -gt 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+case $fib in
+*[!0-9]*)
+    printf '%s: fib must be a number: %s\n' "$prog" "$fib" >&2
+    exit 2
+    ;;
+esac
+
+case "$(uname -s)" in
+FreeBSD) result=$(lookup_freebsd) ;;
+Linux)   result=$(lookup_linux) ;;
+*)       die "unsupported platform: $(uname -s)" ;;
+esac
+
+[ -n "$result" ] || die "no IPv$family default route"
+gateway=${result%% *}
+iface=${result#* }
+[ -n "$gateway" ] || gateway=$iface
+
+# ip(8) reports a link-local gateway without its scope; route(8) has it.
+case $gateway in
+[Ff][Ee]80:*%*) ;;
+[Ff][Ee]80:*)   [ -z "$iface" ] || gateway=$gateway%$iface ;;
+esac
+
+if [ "$show_iface" -eq 1 ]; then
+    printf '%s %s' "$gateway" "$iface"
+else
+    printf '%s' "$gateway"
+fi
+[ "$newline" -eq 0 ] || printf '\n'
