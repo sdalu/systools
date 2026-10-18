@@ -1,0 +1,1633 @@
+#!/bin/sh
+# vocalise — synthesise speech: OVHcloud Riva, or piper/espeak-ng locally
+# usage: vocalise [-E auto|offline|local|riva|piper|espeak] [-A output]
+#                 [-l lang]
+#                 [-v voice] [-m model] [-r rate] [-s speed]
+#                 [-f format] [-b bitrate] [-p] [-L] [-q] [-o file]
+#                 [text...] | -D | -E engine -d [voice...]
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+readonly progname="${0##*/}"
+
+# Three engines. auto tries them in quality order; riva sounds best but
+# speaks four languages, piper is neural and offline, espeak-ng is
+# formant synthesis - robotic but intelligible, and it knows about a
+# hundred languages. French is the case that forces the issue:
+# OVHcloud publishes no French voice.
+#
+# The other two orders are the offline selector. They differ in what
+# happens when no local engine can speak the language: "offline" is a
+# preference and falls back to the network, "local" is a guarantee and
+# fails instead. Anything whose text must not leave the machine wants
+# local, not offline.
+readonly order_auto='riva piper espeak'
+readonly order_offline='piper espeak riva'
+readonly order_local='piper espeak'
+
+# The Riva models are not behind the OpenAI-compatible gateway that
+# transcribe uses: /v1/audio/speech there answers "unknown endpoint".
+# Each language is its own host, and the route is Riva's own.
+readonly endpoint_path=/api/v1/tts/text_to_audio
+
+# Riva rejects any request whose *normalised* text exceeds 2000
+# characters, and normalisation expands the input: digits and
+# abbreviations become words, so 1727 characters of plain English
+# already overflowed at 2200. Long input is therefore split on sentence
+# boundaries and the pieces concatenated. The limit below is raw
+# characters, left well under 2000 to absorb that expansion; text that
+# expands further still (a table of figures) makes the split retry at
+# half the limit rather than fail.
+readonly chunk_limit=1200
+readonly chunk_floor=75
+
+# The other end of the same squeeze: the reply travels over gRPC, which
+# refuses to carry more than 4 MiB, so a piece is also capped by how much
+# audio it turns into - about 95 s at 22 kHz, half that at 44.1 kHz, and
+# less again when -s slows the delivery down. English runs at roughly
+# 15 characters a second, which is where the budget below comes from;
+# it is only a starting point, since a piece that still comes back too
+# big is split finer and retried.
+readonly byte_budget=3500000
+readonly chars_per_second=15
+
+# The Riva models honour whatever sample rate is asked for, but the WAV
+# header they return always claims 16 kHz, so any other rate plays at
+# the wrong speed. The header is therefore written here from scratch,
+# which fixes that and makes concatenating the pieces a matter of
+# appending payloads. The local engines pick their own rate instead, and
+# ffmpeg moves them to -r when one was asked for.
+readonly header_size=44
+readonly default_rate=22050
+readonly rate_min=8000
+readonly rate_max=48000
+
+# Speed is SSML <prosody rate> for Riva; outside this range the model
+# errors out. The same ensemble has no pitch control - <prosody pitch>
+# is refused. espeak-ng scales its words per minute instead, and piper
+# its length scale, so the same -s means the same thing everywhere.
+readonly speed_min=25
+readonly speed_max=250
+readonly espeak_wpm=175
+
+# Set VOCALISE_ENGINE=local in a shell profile to make offline the
+# standing default; -E still overrides it per call.
+: "${VOCALISE_ENGINE:=auto}"
+
+# How -p reaches the speakers, in an order per system. On FreeBSD,
+# PulseAudio is deliberately not in it: there it sits on top of OSS and
+# keeps a mute of its own, so a muted sink swallows the sound while every
+# command still reports success; sndio comes first because sndiod mixes,
+# and OSS is the base system underneath it. On Linux the sound server is
+# PulseAudio, or PipeWire speaking its protocol, with ALSA beneath both.
+# Every output can still be named with -A.
+case "$(uname -s)" in
+    Linux) audio_auto='pulse alsa' ;;
+    *)     audio_auto='sndio oss' ;;
+esac
+readonly audio_auto
+: "${VOCALISE_AUDIO:=auto}"
+: "${VOCALISE_OSS_DEVICE:=/dev/dsp}"
+
+: "${OVH_AI_ENDPOINTS_DOMAIN:=endpoints.kepler.ai.cloud.ovh.net}"
+: "${OVH_AI_TTS_ENDPOINT:=}"
+: "${OVH_AI_TOKEN_FILE:=$HOME/.config/ovhcloud/ai-token}"
+# One token serves every AI Endpoints model, so the ~/.authinfo machine
+# is the OpenAI-compatible host whatever model is called.
+: "${OVH_AI_AUTHINFO_HOST:=oai.$OVH_AI_ENDPOINTS_DOMAIN}"
+: "${AICHAT_CONFIG:=$HOME/.config/aichat/config.yaml}"
+
+# The upstream voice collection, and the index at its root that lists
+# every voice with the size and md5 of each file.
+: "${PIPER_VOICE_URL:=https://huggingface.co/rhasspy/piper-voices/resolve/main}"
+
+# Where piper voices are unpacked. Colon-separated, in preference order;
+# piper itself has no fixed location, so this is the tool's convention.
+: "${PIPER_VOICE_PATH:=$HOME/.local/share/piper/voices\
+:/usr/local/share/piper-voices:/usr/share/piper-voices}"
+
+engine=$VOCALISE_ENGINE
+audio=$VOCALISE_AUDIO
+language=
+language_given=no
+riva_model=
+language_code=
+voice_prefix=
+explicit_model=
+voice=
+piper_model=
+rate=$default_rate
+rate_given=no
+speed=
+format=
+bitrate=
+kbps=
+fetch=no
+listremote=no
+play=auto
+list=no
+quiet=no
+output=
+endpoint=
+work=
+tmpdir=
+
+cleanup() {
+    if [ -n "$tmpdir" ]; then
+        rm -rf -- "$tmpdir"
+    fi
+}
+trap cleanup EXIT
+# A signal ends the run; the EXIT trap then cleans up.
+trap 'exit 130' INT
+trap 'exit 1' HUP TERM
+
+die() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+    exit 1
+}
+
+# A usage error: a value no option takes.
+bad() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+    exit 2
+}
+
+warn() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+}
+
+usage_text() {
+    local pad
+    # $progname is whatever the script was invoked as, so the
+    # continuation line is padded to match rather than by hand.
+    pad=$(printf '%s' "usage: $progname " | sed 's/./ /g')
+    cat <<EOF
+usage: $progname [-E engine] [-l lang] [-v voice] [-m model] [-r rate]
+${pad}[-s speed] [-p] [-L] [-q] [-o file] [text...]
+
+  -E engine  which engine speaks, as one of three selectors or one
+             engine by name (default \$VOCALISE_ENGINE, now $engine):
+               auto     riva, then piper, then espeak-ng - best voice
+                        first. riva covers en, de, es and it
+               offline  piper, then espeak-ng, and riva only if
+                        neither knows the language: prefer local
+               local    piper, then espeak-ng, and fail rather than
+                        go to the network: the text stays on this
+                        machine
+               riva | piper | espeak   that one or nothing
+             OVHcloud publishes no French Riva voice, so -l fr lands
+             on piper or espeak under every selector
+  -l lang    language (default en): en, de, es, it on riva, anything
+             the local engines know elsewhere - fr, pt-br, nl, …
+  -v voice   voice, as the chosen engine names it. On riva the prefix
+             is optional, so "Male-1" and "English-US.Male-1" are the
+             same; on espeak it is a voice like fr-be; on piper it is a
+             full key, the short tom-medium or tom within -l, or a path
+             to a .onnx model. -L lists them
+  -m model   explicit Riva model name (default: the one for -l)
+  -r rate    output sample rate in Hz, $rate_min-$rate_max
+             (default $default_rate). Riva synthesises at it directly;
+             the local engines are resampled to it by ffmpeg, and
+             without ffmpeg keep their own rate and say so
+  -s speed   speaking rate, as a multiplier (0.8) or a percentage
+             (80%), $speed_min-$speed_max%. On riva this wraps the text
+             in SSML, so pass plain text with it, not your own markup
+  -f format  output format: wav (default), flac, mp3, ogg, opus, or
+             any other extension ffmpeg can mux. Without -f the format
+             comes from -o's extension, and wav when there is neither.
+             Every engine speaks WAV, so anything else is transcoded -
+             by ffmpeg where it is installed, otherwise by lame, oggenc,
+             opusenc or flac
+  -b spec    encoder setting: a bitrate for the lossy formats, as 128k
+             or 128, or the compression level 0-8 for flac. Left out,
+             each encoder uses its own default, which is the safer
+             choice - libvorbis has no 128k mode at 22 kHz mono, and
+             refuses rather than clamping
+  -A output  where -p sends the sound: auto (default), sndio, oss,
+             pulse or alsa. auto tries, in order, $audio_auto. On
+             FreeBSD it never tries pulse: there pulse sits on top of
+             oss with a mute of its own, so a muted sink eats the sound
+             while everything still reports success. sndio honours
+             \$AUDIODEVICE, oss uses \$VOCALISE_OSS_DEVICE
+             ($VOCALISE_OSS_DEVICE)
+  -p         play the audio instead of writing it (the default when
+             stdout is a terminal and -o was not given)
+  -L         list the voices available for -l on the chosen engine
+  -D         list the voices that can be downloaded for -l, as
+             <engine>/<voice>, and exit. Needs the network. -E is
+             optional and narrows the list to one engine
+  -d         download mode: the operands are voices to install into
+             the first writable directory on \$PIPER_VOICE_PATH, and
+             nothing is spoken. Name each as a full key the way -D
+             prints it (fr_FR-siwis-medium) or, within -l's language,
+             the short siwis-medium or siwis; a short name fitting more
+             than one voice is an error listing them. With no operand
+             it fetches every voice for -l, or every voice the engine
+             has when -l is absent - gigabytes, so the size is stated
+             first and voices already installed are skipped. -E must
+             name one engine exactly; auto, offline and local do not.
+             Each voice is its .onnx and its .onnx.json, checked
+             against the index's md5 when jq is installed
+  -q         quiet: do not announce size, duration and voice on stderr
+  -o file    write to file; its extension picks the format unless -f
+             says otherwise. "-" means stdout. -p always plays the
+             lossless audio, whatever -f asks to be written
+
+Text comes from the operands, or from stdin when there are none.
+Riva caps a request at 2000 characters of normalised text; longer input
+is split on sentence boundaries and the audio joined back together.
+
+Set VOCALISE_ENGINE=local in your profile to keep everything offline
+by default; -E still overrides it for one call.
+
+piper voices are looked for in \$PIPER_VOICE_PATH
+($PIPER_VOICE_PATH).
+
+Credentials for riva are read from \$OVH_AI_TOKEN, then
+\$OVH_AI_ENDPOINTS_API_KEY, then \$OVH_AI_TOKEN_FILE
+($OVH_AI_TOKEN_FILE), then the password of the
+$OVH_AI_AUTHINFO_HOST entry in ~/.authinfo or ~/.netrc, then the
+OVH client's api_key in $AICHAT_CONFIG.
+EOF
+}
+
+# -h is a request, so it answers on stdout and exits 0; anything
+# else reaching here is a usage error, which belongs on stderr.
+usage() {
+    local status
+    status=${1-2}
+    if [ "$status" -eq 0 ]; then
+        usage_text
+    else
+        usage_text >&2
+    fi
+    exit "$status"
+}
+
+# Convenience fallback: the api_key of the openai-compatible client named
+# OVH. Keyed on the preceding "name: OVH" so the other clients' keys in the
+# same file are never picked up.
+aichat_token() {
+    [ -r "$AICHAT_CONFIG" ] || return 1
+    awk '
+        /^-[[:space:]]/                            { ovh = 0 }
+        /^[[:space:]]*name:[[:space:]]*OVH[[:space:]]*$/ { ovh = 1 }
+        ovh && /^[[:space:]]*api_key:[[:space:]]/  {
+            sub(/^[[:space:]]*api_key:[[:space:]]*/, "")
+            print
+            exit
+        }
+    ' "$AICHAT_CONFIG"
+}
+
+# The password of the first ~/.authinfo, then ~/.netrc, entry for the AI
+# Endpoints host, as caldav reads them: # comment lines are skipped and a
+# trailing backslash joins a line to the next.
+authinfo_token() {
+    local file
+    for file in "$HOME/.authinfo" "$HOME/.netrc"; do
+        [ -r "$file" ] || continue
+        awk -v host="$OVH_AI_AUTHINFO_HOST" '
+            /^[[:space:]]*#/ { next }
+            {
+                sub(/\\$/, "")
+                n = split($0, w)
+                for (j = 1; j <= n; j++) word[++nw] = w[j]
+            }
+            END {
+                for (i = 1; i <= nw; i++) {
+                    if (word[i] == "default")  { cur = ""; continue }
+                    if (word[i] == "machine")  { cur = word[++i]; continue }
+                    if (cur == host && word[i] == "password") {
+                        print word[i + 1]
+                        exit 0
+                    }
+                    i++
+                }
+                exit 1
+            }
+        ' "$file" && return 0
+    done
+    return 1
+}
+
+# OVH_AI_ENDPOINTS_API_KEY is the name OVH's own documentation and SDK
+# samples use; OVH_AI_TOKEN is this tool's older name.  Both name the same
+# AI Endpoints bearer token, so accept either rather than making a
+# deployment carry the identical secret twice under two names.
+read_token() {
+    if [ -n "${OVH_AI_TOKEN:-}" ]; then
+        printf '%s\n' "$OVH_AI_TOKEN"
+    elif [ -n "${OVH_AI_ENDPOINTS_API_KEY:-}" ]; then
+        printf '%s\n' "$OVH_AI_ENDPOINTS_API_KEY"
+    elif [ -r "$OVH_AI_TOKEN_FILE" ]; then
+        head -n 1 -- "$OVH_AI_TOKEN_FILE"
+    else
+        authinfo_token || aichat_token
+    fi
+}
+
+# The token goes into a curl config line between double quotes, where a
+# quote or a backslash would end it early and leave the rest to be read
+# as curl options; anything outside a bearer token's alphabet (RFC 6750)
+# is refused rather than escaped. As an -H argument the token would sit
+# in curl's argv, which ps shows to every user on the machine; a config
+# file inside the 0700 temp directory keeps it off the process table.
+stage_credentials() {
+    local token
+    token=$(read_token) || token=
+    [ -n "$token" ] ||
+        die "no API token: set OVH_AI_TOKEN or OVH_AI_ENDPOINTS_API_KEY," \
+            "or write $OVH_AI_TOKEN_FILE"
+    case $token in
+        *[!A-Za-z0-9._~+/=-]*)
+            die "the API token holds a character no bearer token has;" \
+                "check where it was read from" ;;
+    esac
+    (umask 077
+     printf 'header = "Authorization: Bearer %s"\n' "$token" \
+         > "$tmpdir/curlrc") || die "could not stage the credentials"
+}
+
+# A path that can never be read as an option by a tool lacking "--".
+safe_path() {
+    case $1 in
+        -*) printf '%s\n' "./$1" ;;
+        *)  printf '%s\n' "$1"   ;;
+    esac
+}
+
+# The extension is a property of the basename: a dot in a directory
+# name ("dir.v2/out") is not one, and neither is the leading dot of a
+# dotfile.
+extension() {
+    local base
+    base=${1##*/}
+    case $base in
+        .*.*|[!.]*.*) printf '%s\n' "${base##*.}" ;;
+        *)            printf '%s\n' wav            ;;
+    esac
+}
+
+# Never fatal: a language Riva cannot speak is a language for piper or
+# espeak, and which of those applies is settled in resolve_engine.
+select_language() {
+    language=$1
+    language_code=$1
+    riva_model=
+    voice_prefix=
+    case $1 in
+        en|en-US|en-us) riva_model=nvr-tts-en-us; language_code=en-US
+                        voice_prefix=English-US. ;;
+        de|de-DE|de-de) riva_model=nvr-tts-de-de; language_code=de-DE
+                        voice_prefix=German-DE- ;;
+        es|es-ES|es-es) riva_model=nvr-tts-es-es; language_code=es-ES
+                        voice_prefix=Spanish-ES- ;;
+        it|it-IT|it-it) riva_model=nvr-tts-it-it; language_code=it-IT
+                        voice_prefix=Italian-IT- ;;
+    esac
+}
+
+# Confirmed against the endpoint rather than the catalogue page: English
+# alone has the emotional subvoices, and only German is male-only.
+voices_for() {
+    case $1 in
+        nvr-tts-en-us)
+            printf 'English-US.%s\n' Female-1 Male-1 \
+                Female-Calm Female-Neutral Female-Happy Female-Angry \
+                Female-Fearful Female-Sad \
+                Male-Calm Male-Neutral Male-Happy Male-Angry ;;
+        nvr-tts-de-de) printf 'German-DE-%s\n'  Male-1 ;;
+        nvr-tts-es-es) printf 'Spanish-ES-%s\n' Female-1 Male-1 ;;
+        nvr-tts-it-it) printf 'Italian-IT-%s\n' Female-1 Male-1 ;;
+    esac
+}
+
+resolve_voice() {
+    local name
+    name=$1
+    case $name in
+        "$voice_prefix"*) ;;
+        *) name=$voice_prefix$name ;;
+    esac
+    if [ -n "$(voices_for "$riva_model")" ] &&
+       ! voices_for "$riva_model" | grep -qxF -- "$name"; then
+        printf '%s: unknown voice %s; %s offers:\n' \
+            "$progname" "$name" "$riva_model" >&2
+        voices_for "$riva_model" | sed 's/^/  /' >&2
+        exit 1
+    fi
+    printf '%s\n' "$name"
+}
+
+# The package installs both names on some systems and only one on
+# others; either accepts the flags used here.
+espeak_bin() {
+    if command -v espeak-ng >/dev/null 2>&1; then
+        printf 'espeak-ng\n'
+    elif command -v espeak >/dev/null 2>&1; then
+        printf 'espeak\n'
+    fi
+}
+
+# --voices=<unknown> still exits 0 and prints its header row, so the
+# question is whether any voice line followed it.
+espeak_voices() {
+    local bin
+    bin=$(espeak_bin)
+    [ -n "$bin" ] || return 1
+    "$bin" --voices="$1" 2>/dev/null | awk 'NR > 1'
+}
+
+espeak_can() {
+    [ -n "$(espeak_voices "$1" || true)" ]
+}
+
+# piper voices are <lang>_<REGION>-<name>-<quality>.onnx beside a .json
+# of the same name; the language part uses an underscore where a BCP 47
+# tag uses a hyphen.
+piper_voices() {
+    local stem alt
+    stem=$1
+    alt=$(printf '%s' "$1" | tr - _)
+    (
+        IFS=:
+        set -f
+        for dir in $PIPER_VOICE_PATH; do
+            set +f
+            [ -d "$dir" ] || continue
+            if [ -z "$stem" ]; then
+                set -- "$dir"/*.onnx
+            else
+                set -- "$dir/$stem".onnx "$dir/$stem"[-_]*.onnx \
+                       "$dir/$alt".onnx "$dir/$alt"[-_]*.onnx
+            fi
+            for f do
+                [ -f "$f" ] || continue
+                printf '%s\n' "$f"
+            done
+        done
+    ) | awk '!seen[$0]++'
+}
+
+# -v names an installed piper voice the way -d names a downloadable
+# one: the full key, or the short <name>-<quality> or <name> within the
+# language. A full key is looked for everywhere, since it says its own
+# language and -l should not have to agree with it.
+piper_pick() {
+    local want scope matches count
+    want=$1
+    case $want in
+        *-*-*) scope= ;;
+        *)     scope=$language ;;
+    esac
+    matches=$(piper_voices "$scope" | awk -v w="$want" '
+        {
+            path = $0
+            key = path
+            sub(/.*\//, "", key)
+            sub(/\.onnx$/, "", key)
+            short = key
+            sub(/^[^-]*-/, "", short)      # drop the <code>- prefix
+            name = short
+            sub(/-[^-]*$/, "", name)       # and the -<quality> suffix
+            if (key == w || short == w || name == w) print path
+        }')
+    count=$(printf '%s' "$matches" | awk 'NF { n++ } END { print n + 0 }')
+    case $count in
+        1) printf '%s\n' "$matches" ;;
+        0) die "no piper voice matching $want for $language in" \
+               "\$PIPER_VOICE_PATH; -L lists what is installed" ;;
+        *) printf '%s: %s matches more than one installed voice:\n' \
+               "$progname" "$want" >&2
+           printf '%s\n' "$matches" | sed 's|.*/||; s|\.onnx$||; s|^|  |' >&2
+           exit 1 ;;
+    esac
+}
+
+piper_can() {
+    command -v piper >/dev/null 2>&1 || return 1
+    [ -n "$(piper_voices "$1")" ]
+}
+
+# Two piper generations are in the field and their flags differ: the
+# original C++ binary takes --model/--output_file and reads stdin, while
+# piper1-gpl takes -m/-f and an --input-file. Ask --help which this is
+# rather than guessing wrong on someone else's install.
+piper_style() {
+    if piper --help 2>&1 | grep -q -- '--output_file'; then
+        printf 'legacy\n'
+    else
+        printf 'modern\n'
+    fi
+}
+
+engine_can() {
+    case $1 in
+        riva)   [ -n "$riva_model" ] ;;
+        piper)  piper_can "$language" ;;
+        espeak) espeak_can "$language" ;;
+    esac
+}
+
+# auto, offline and local name an order to try; the rest name one
+# engine and are taken literally.
+engine_order() {
+    case $1 in
+        auto)    printf '%s\n' "$order_auto" ;;
+        offline) printf '%s\n' "$order_offline" ;;
+        local)   printf '%s\n' "$order_local" ;;
+    esac
+}
+
+resolve_engine() {
+    local candidate order
+    order=$(engine_order "$engine")
+
+    # A .onnx voice can only mean piper, whatever the language would
+    # otherwise have picked. It is offline either way, so no mode
+    # forbids it.
+    if [ -n "$order" ]; then
+        case $voice in
+            *.onnx) command -v piper >/dev/null 2>&1 ||
+                        die "-v names a piper voice, but piper is not" \
+                            "installed"
+                    engine=piper
+                    return 0 ;;
+        esac
+    fi
+
+    if [ -z "$order" ]; then
+        engine_can "$engine" || case $engine in
+            riva)   die "riva has no $language voice: it speaks en, de," \
+                        "es and it; name a model with -m if one exists" ;;
+            piper)  die "piper is not installed, or has no $language" \
+                        "voice in \$PIPER_VOICE_PATH" ;;
+            espeak) die "espeak-ng is not installed, or does not know" \
+                        "$language" ;;
+        esac
+        return 0
+    fi
+
+    for candidate in $order; do
+        if engine_can "$candidate"; then
+            engine=$candidate
+            return 0
+        fi
+    done
+
+    # Under -E local, say whether going online would have helped: that
+    # is the whole question the caller is weighing.
+    if [ "$engine" = local ] && engine_can riva; then
+        die "no offline engine can speak $language, but riva can:" \
+            "install a piper voice, or drop -E local"
+    fi
+    die "no engine can speak $language: riva covers en, de, es and it," \
+        "and neither piper nor espeak-ng offers it here"
+}
+
+list_voices() {
+    case $engine in
+        riva)   [ -n "$(voices_for "$riva_model")" ] ||
+                    die "no published voice list for $riva_model"
+                voices_for "$riva_model" ;;
+        espeak) espeak_voices "$language" | awk '{ print $2 "  " $4 }' ;;
+        piper)  piper_voices "$language" ;;
+    esac
+}
+
+# A percentage goes through as written; anything else is read as a
+# multiplier, which is the form a caller reaches for first.
+resolve_speed() {
+    local percent
+    case $1 in
+        *%) percent=${1%\%} ;;
+        ''|*[!0-9.]*|*.*.*) percent= ;;
+        *)  percent=$(awk -v s="$1" 'BEGIN { printf "%d", s * 100 }') ;;
+    esac
+    case $percent in
+        ''|*[!0-9]*) bad "unreadable speed: $1 (try 0.8 or 80%)" ;;
+    esac
+    [ "$percent" -ge "$speed_min" ] && [ "$percent" -le "$speed_max" ] ||
+        bad "speed $percent% is outside the $speed_min-$speed_max% range"
+    printf '%s%%\n' "$percent"
+}
+
+# Newlines and runs of blanks collapse to single spaces, so a piece is
+# always one control-character-free line and the only JSON escaping left
+# to do is backslash and double quote. The cut is taken at the last
+# sentence end that fits, then the last clause end, then the last word
+# boundary, and only failing all three in mid-word.
+split_text() {
+    awk -v limit="$1" -v dir="$tmpdir" '
+        { text = text " " $0 }
+        END {
+            gsub(/[[:cntrl:]]/, " ", text)
+            gsub(/[[:space:]]+/, " ", text)
+            sub(/^ /, "", text)
+            sub(/ $/, "", text)
+            n = 0
+            while (length(text) > 0) {
+                if (length(text) <= limit) {
+                    piece = text
+                    text = ""
+                } else {
+                    window = substr(text, 1, limit + 1)
+                    if      (match(window, /^.*[.!?][")]* /)) cut = RLENGTH
+                    else if (match(window, /^.*[,;:] /))      cut = RLENGTH
+                    else if (match(window, /^.* /))           cut = RLENGTH
+                    else                                      cut = limit
+                    piece = substr(text, 1, cut)
+                    text = substr(text, cut + 1)
+                }
+                sub(/ $/, "", piece)
+                sub(/^ /, "", text)
+                if (piece != "") {
+                    n++
+                    file = sprintf("%s/chunk.%04d", dir, n)
+                    printf "%s", piece > file
+                    close(file)
+                }
+            }
+            print n
+        }
+    ' < "$tmpdir/text"
+}
+
+# stdin to a JSON string body, without the quotes. The chunk files hold
+# no control characters - split_text removed them - so backslash and
+# double quote are the whole job.
+json_escape() {
+    sed -e 's/\\/\\\\/g' -e 's/"/\\"/g' | tr -d '\n'
+}
+
+json_value() {
+    printf '%s' "$1" | json_escape
+}
+
+escape_text() {
+    if [ -n "$speed" ]; then
+        sed -e 's/&/\&amp;/g' -e 's/</\&lt;/g' -e 's/>/\&gt;/g' < "$1"
+    else
+        cat < "$1"
+    fi | json_escape
+}
+
+build_request() {
+    # -l takes any language when a local engine may serve it, and -m
+    # turns off the voice allow-list, so neither value is trusted here.
+    printf '{"encoding":1,"language_code":"%s","sample_rate_hz":%s,' \
+        "$(json_value "$language_code")" "$rate"
+    printf '"voice_name":"%s","text":"' "$(json_value "$voice")"
+    if [ -n "$speed" ]; then
+        printf '<speak><prosody rate=\\"%s\\">' "$speed"
+    fi
+    escape_text "$1"
+    if [ -n "$speed" ]; then
+        printf '</prosody></speak>'
+    fi
+    printf '"}\n'
+}
+
+# The error bodies carry no trailing newline; awk supplies one so the
+# message below does not run into them.
+report_body() {
+    awk 'NR <= 5 { print }' < "$1" >&2
+}
+
+# Returns 1, rather than dying, when the piece was too big - too much
+# text in or too much audio out. Both the caller recovers from by
+# splitting finer; everything else is fatal here.
+request() {
+    local body code
+    body=$tmpdir/body
+    # request() runs under `if synthesise`, where set -e is disabled for
+    # the whole compound command, so every failure here is checked by
+    # hand or it is not checked at all.
+    build_request "$1" > "$tmpdir/request.json" ||
+        die "could not write the request body"
+
+    if ! code=$(curl -sS -o "$body" -w '%{http_code}' \
+                    -X POST "$endpoint" \
+                    -K "$tmpdir/curlrc" \
+                    -H 'accept: application/octet-stream' \
+                    -H 'Content-Type: application/json' \
+                    --data-binary "@$tmpdir/request.json"); then
+        die "could not reach $endpoint"
+    fi
+    case $code in
+        2??) ;;
+        400) # Too much text in, or too much audio out: both mean the
+             # piece was too big, and both are recoverable by cutting it
+             # smaller, so tell the caller rather than giving up.
+             if grep -qE 'maximum input length|message length too large' \
+                    < "$body"; then
+                 return 1
+             fi
+             report_body "$body"
+             die "HTTP $code from the synthesis endpoint" ;;
+        *)   report_body "$body"
+             die "HTTP $code from the synthesis endpoint" ;;
+    esac
+
+    [ "$(head -c 4 < "$body")" = RIFF ] &&
+    [ "$(head -c 40 < "$body" | tail -c 4)" = data ] ||
+        die "the endpoint answered with something other than the" \
+            "expected $header_size-byte WAV header"
+    tail -c "+$((header_size + 1))" < "$body" >> "$tmpdir/pcm" ||
+        die "could not append to the audio being assembled"
+    return 0
+}
+
+synthesise() {
+    local i chunk
+    i=1
+    while [ "$i" -le "$1" ]; do
+        chunk=$(printf '%s/chunk.%04d' "$tmpdir" "$i")
+        request "$chunk" || return 1
+        i=$((i + 1))
+    done
+    return 0
+}
+
+# printf cannot emit the header's NUL bytes: %b stops at one on the BSD
+# userland. awk's %c does, in the C locale, where it is a byte rather
+# than a character.
+wav_header() {
+    LC_ALL=C awk -v bytes="$1" -v rate="$2" '
+        function le(value, width,    i) {
+            for (i = 0; i < width; i++) {
+                printf "%c", value % 256
+                value = int(value / 256)
+            }
+        }
+        BEGIN {
+            printf "RIFF";     le(bytes + 36, 4)
+            printf "WAVEfmt "; le(16, 4)
+            le(1, 2); le(1, 2)              # PCM, one channel
+            le(rate, 4); le(rate * 2, 4)    # sample rate, byte rate
+            le(2, 2); le(16, 2)             # block align, bits
+            printf "data";     le(bytes, 4)
+        }'
+}
+
+# The sample rate sits at byte 24 of a canonical WAV header, four bytes
+# little-endian; od reads it in host order, which is little-endian on
+# every machine this runs on.
+wav_rate() {
+    od -An -tu4 -j 24 -N 4 < "$1" | tr -d ' \n'
+}
+
+synth_riva() {
+    local limit bytes
+    command -v curl >/dev/null 2>&1 ||
+        die "curl is required for the riva engine (pkg install curl)"
+    stage_credentials
+
+    # A high sample rate or a slow -s makes each character cost more
+    # bytes, so the first cut is already sized for them instead of
+    # discovering the 4 MiB ceiling one failed request at a time.
+    limit=$(awk -v cap="$chunk_limit" -v budget="$byte_budget" \
+                -v rate="$rate" -v cps="$chars_per_second" \
+                -v speed="${speed:-100%}" '
+        BEGIN {
+            sub(/%$/, "", speed)
+            fit = int(budget * cps * speed / (rate * 2 * 100))
+            print (fit < cap) ? fit : cap
+        }')
+    [ "$limit" -ge "$chunk_floor" ] || limit=$chunk_floor
+
+    while :; do
+        rm -f -- "$tmpdir"/chunk.*
+        : > "$tmpdir/pcm"
+        pieces=$(split_text "$limit")
+        [ "$pieces" -gt 0 ] || die "no text to speak"
+        if synthesise "$pieces"; then
+            break
+        fi
+        limit=$((limit / 2))
+        [ "$limit" -ge "$chunk_floor" ] ||
+            die "the text is still too big for the model when cut into" \
+                "$chunk_floor-character pieces"
+        [ "$quiet" = yes ] ||
+            warn "piece too big for the model; retrying at $limit chars"
+    done
+
+    bytes=$(wc -c < "$tmpdir/pcm")
+    bytes=$((bytes))
+    [ "$bytes" -gt 0 ] || die "the endpoint returned no audio"
+    wav_header "$bytes" "$rate" > "$tmpdir/engine.wav" ||
+        die "could not write the WAV header"
+    cat -- "$tmpdir/pcm" >> "$tmpdir/engine.wav" ||
+        die "could not assemble the audio"
+}
+
+# espeak-ng has no length limit worth chunking for, so the whole text
+# goes in one call; -s is words per minute, scaled off its default.
+synth_espeak() {
+    local bin wpm
+    bin=$(espeak_bin)
+    set -- -v "$voice" -w "$tmpdir/engine.wav" -f "$tmpdir/text"
+    if [ -n "$speed" ]; then
+        wpm=$(awk -v base="$espeak_wpm" -v s="${speed%\%}" \
+                  'BEGIN { printf "%d", base * s / 100 }')
+        set -- "$@" -s "$wpm"
+    fi
+    "$bin" "$@" </dev/null || die "$bin could not synthesise the text"
+}
+
+# piper's length scale is the reciprocal of a speed: 2.0 takes twice as
+# long. Both generations accept a .onnx path for the model, which is
+# what piper_voices hands over.
+synth_piper() {
+    local scale
+    if [ -n "$speed" ]; then
+        scale=$(awk -v s="${speed%\%}" 'BEGIN { printf "%.4f", 100 / s }')
+    fi
+    # piper writes the output path to its stdout, which is where the
+    # WAV goes when there is no -o: unredirected it lands at the front
+    # of the file and the result is no longer a WAV. Its stderr is a
+    # running commentary plus an onnxruntime warning, so it is held and
+    # shown only if piper actually fails.
+    case $(piper_style) in
+        legacy)
+            set -- -q --model "$piper_model" \
+                   --output_file "$tmpdir/engine.wav"
+            [ -z "${scale:-}" ] || set -- "$@" --length_scale "$scale"
+            piper "$@" < "$tmpdir/text" > /dev/null \
+                2> "$tmpdir/piper.log" || {
+                    report_body "$tmpdir/piper.log"
+                    die "piper could not synthesise the text"
+                } ;;
+        modern)
+            set -- -m "$piper_model" -f "$tmpdir/engine.wav" \
+                   --input-file "$tmpdir/text"
+            [ -z "${scale:-}" ] || set -- "$@" --length-scale "$scale"
+            piper "$@" </dev/null > /dev/null \
+                2> "$tmpdir/piper.log" || {
+                    report_body "$tmpdir/piper.log"
+                    die "piper could not synthesise the text"
+                } ;;
+    esac
+}
+
+# Riva already synthesised at $rate; the local engines have a rate of
+# their own. ffmpeg moves them, and without ffmpeg the native rate is
+# kept and reported rather than misdeclared in the header.
+normalise_rate() {
+    local actual
+    actual=$(wav_rate "$tmpdir/engine.wav")
+    if [ "$actual" = "$rate" ]; then
+        mv -- "$tmpdir/engine.wav" "$tmpdir/out.wav"
+    elif command -v ffmpeg >/dev/null 2>&1; then
+        ffmpeg -loglevel error -y -i "$tmpdir/engine.wav" \
+            -ar "$rate" -ac 1 "$tmpdir/out.wav" </dev/null ||
+            die "ffmpeg could not resample to $rate Hz"
+    else
+        [ "$rate_given" = no ] ||
+            warn "no ffmpeg: keeping the engine's own $actual Hz"
+        rate=$actual
+        mv -- "$tmpdir/engine.wav" "$tmpdir/out.wav"
+    fi
+}
+
+have() {
+    command -v "$1" >/dev/null 2>&1
+}
+
+# An exact engine, as opposed to auto/offline/local, which only say
+# which order to try them in.
+engine_is_exact() {
+    case $1 in
+        riva|piper|espeak) return 0 ;;
+        *) return 1 ;;
+    esac
+}
+
+# The engines that publish a collection to download from. piper is the
+# only one today; -D prefixes every voice with the engine it belongs to
+# so that -d always has an unambiguous thing to be told.
+fetch_engines() {
+    printf 'piper\n'
+}
+
+fetch_capable() {
+    fetch_engines | grep -qxF -- "$1"
+}
+
+fetch_url() {
+    have curl || die "curl is required to download voices"
+    curl -fsSL -o "$2" -- "$1" ||
+        die "could not download $1"
+}
+
+voices_index() {
+    [ -s "$tmpdir/voices.json" ] ||
+        fetch_url "$PIPER_VOICE_URL/voices.json" "$tmpdir/voices.json"
+    printf '%s\n' "$tmpdir/voices.json"
+}
+
+# Voice keys are <code>-<name>-<quality>; the language part of a key is
+# what -l selects on, as either the family (fr) or the full code (fr_FR).
+voice_prefix_for() {
+    case $1 in
+        *[-_]*) printf '%s\n' "$(printf '%s' "$1" | tr - _)" ;;
+        *)      printf '%s_\n' "$1" ;;
+    esac
+}
+
+# Read straight out of the index rather than through jq, which is not
+# required for listing: every entry carries one "key" line.
+piper_remote_voices() {
+    local index
+    index=$(voices_index)
+    grep -o '"key": "[^"]*"' < "$index" |
+        sed 's/.*"key": "//; s/"$//' |
+        { if [ -n "$1" ]; then
+              # index() and not grep: a language with a regex character
+              # in it selected other languages ("f." matched fa_IR) or
+              # leaked a grep error.
+              awk -v p="$(voice_prefix_for "$1")" 'index($0, p) == 1'
+          else
+              cat
+          fi; } |
+        sort
+}
+
+# Every voice an engine publishes for a language. A second engine with a
+# collection adds its lookup here and is picked up by -D and -d alike.
+remote_voices() {
+    case $1 in
+        piper) piper_remote_voices "$2" ;;
+    esac
+}
+
+# The voices in one engine that a -d argument names: a full key matches
+# itself, a short one matches <name>-<quality> or <name>.
+name_matches() {
+    local list scope
+    # A full key already says which language it belongs to, so -l does
+    # not have to agree with it; only a short name is looked for inside
+    # -l. This is the rule piper_pick uses for -v.
+    case $2 in
+        *-*-*) scope= ;;
+        *)     scope=$language ;;
+    esac
+    list=$tmpdir/candidates.$1
+    remote_voices "$1" "$scope" > "$list"
+    case $2 in
+        *-*-*) grep -xF -- "$2" < "$list" || true ;;
+        *) awk -v w="$2" '
+               {
+                   key = $0
+                   sub(/^[^-]*-/, "", key)      # drop the <code>- prefix
+                   name = key
+                   sub(/-[^-]*$/, "", name)     # and the -<quality> suffix
+                   if (key == w || name == w) print
+               }' < "$list" ;;
+    esac
+}
+
+# Matches across every engine that could supply them, as <engine>/<key>,
+# narrowed to -E when that names one engine exactly.
+collect_matches() {
+    local e
+    fetch_engines | while IFS= read -r e; do
+        if engine_is_exact "$engine" && [ "$engine" != "$e" ]; then
+            continue
+        fi
+        name_matches "$e" "$1" | sed "s|^|$e/|"
+    done
+}
+
+# A bulk fetch runs to gigabytes, so its size goes in front of the user
+# before the first byte moves rather than after the disk fills.
+announce_bulk() {
+    local count bytes
+    [ "$quiet" = no ] || return 0
+    count=$(awk 'END { print NR }' < "$tmpdir/all")
+    bytes=$(total_bytes < "$tmpdir/all")
+    if [ -n "$bytes" ] && [ "$bytes" -gt 0 ] 2>/dev/null; then
+        warn "fetching $count voices, $(awk -v b="$bytes" \
+            'BEGIN { printf "%.1f GB", b / 1073741824 }') into $(voice_dir)"
+    else
+        warn "fetching $count voices into $(voice_dir)"
+    fi
+}
+
+# Printed as the command that would have worked, since the point of
+# refusing is to say what to type instead.
+suggest_matches() {
+    printf '%s: %s:\n' "$progname" "$1" >&2
+    sed 's|^\([^/]*\)/\(.*\)$|  -E \1 -d \2|' < "$tmpdir/hits" >&2
+    exit 1
+}
+
+# All 176 keys are exactly <code>-<name>-<quality>, so the repository
+# path is derivable and needs no parser.
+voice_path() {
+    local key code rest name quality family
+    key=$1
+    code=${key%%-*}
+    rest=${key#*-}
+    name=${rest%-*}
+    quality=${rest##*-}
+    family=${code%%_*}
+    case $key in
+        *-*-*) ;;
+        *) die "not a voice key: $key (expected <code>-<name>-<quality>," \
+               "as -D prints them)" ;;
+    esac
+    printf '%s/%s/%s/%s/%s\n' "$family" "$code" "$name" "$quality" "$key"
+}
+
+md5_of() {
+    if have md5; then
+        md5 -q "$1"
+    elif have md5sum; then
+        md5sum "$1" | cut -d' ' -f1
+    fi
+}
+
+# Only the md5 check needs jq; without it the download still happens and
+# the omission is said out loud rather than passed off as verified.
+verify_file() {
+    local key remote want got
+    key=$1 remote=$2
+    have jq || return 0
+    want=$(jq -r --arg k "$key" --arg p "$remote" \
+              '.[$k].files[$p].md5_digest // empty' < "$(voices_index)")
+    [ -n "$want" ] || return 0
+    got=$(md5_of "$3")
+    [ -n "$got" ] || return 0
+    [ "$want" = "$got" ] ||
+        die "$remote failed its md5 check (index $want, downloaded $got)"
+}
+
+# The download size of a list of keys on stdin, in bytes. MODEL_CARD is
+# in the index but is not fetched, so it does not count.
+total_bytes() {
+    have jq || return 0
+    jq -Rn --slurpfile idx "$(voices_index)" '
+        [ [inputs][] as $k
+          | $idx[0][$k].files
+          | to_entries[]
+          | select(.key | endswith("MODEL_CARD") | not)
+          | .value.size_bytes ]
+        | add // 0' 2>/dev/null
+}
+
+# The first directory on the path that exists and takes a write; if none
+# does, the first entry is created, which is the per-user default.
+voice_dir() {
+    local found
+    found=$(
+        IFS=:
+        set -f
+        for dir in $PIPER_VOICE_PATH; do
+            set +f
+            [ -d "$dir" ] && [ -w "$dir" ] || continue
+            printf '%s\n' "$dir"
+            break
+        done
+    )
+    if [ -z "$found" ]; then
+        found=${PIPER_VOICE_PATH%%:*}
+        mkdir -p -- "$found" || die "could not create $found"
+    fi
+    printf '%s\n' "$found"
+}
+
+# Listed as <engine>/<voice>, filtered to -E when that names one engine
+# exactly. remote_voices reads piper's index; a second engine would put
+# its own lookup here beside it.
+list_remote() {
+    local e
+    fetch_engines | while IFS= read -r e; do
+        if engine_is_exact "$engine" && [ "$engine" != "$e" ]; then
+            continue
+        fi
+        remote_voices "$e" "$language" | sed "s|^|$e/|"
+    done
+}
+
+# A voice is the model and its sidecar; piper needs both beside each
+# other, so neither is installed until both have arrived and passed.
+fetch_voice() {
+    local key dir base suffix target
+    key=$1
+    base=$(voice_path "$key")
+    dir=$(voice_dir)
+    # Both halves present means there is nothing to do, which is what
+    # makes an interrupted bulk fetch resumable.
+    if [ -e "$dir/$key.onnx" ] && [ -e "$dir/$key.onnx.json" ]; then
+        [ "$quiet" = yes ] || warn "$key already installed"
+        return 0
+    fi
+    for suffix in .onnx .onnx.json; do
+        target=$key$suffix
+        [ "$quiet" = yes ] || warn "fetching $target"
+        fetch_url "$PIPER_VOICE_URL/$base$suffix" "$tmpdir/$target"
+        verify_file "$key" "$base$suffix" "$tmpdir/$target"
+    done
+    # Copied and then removed, not moved: the staged copy has to go, or
+    # a run needs twice its own size and half of it stays in whatever
+    # ${TMPDIR:-/tmp} is - a 1 GB tmpfs here, which is RAM. mv would do
+    # both in one step, but across filesystems it falls back to a copy
+    # that tries to preserve ownership, and warns twice per voice when
+    # the staged file's group cannot be set on the destination.
+    for suffix in .onnx .onnx.json; do
+        target=$key$suffix
+        cp -- "$tmpdir/$target" "$dir/$target" ||
+            die "could not write $dir/$target"
+        rm -f -- "$tmpdir/$target"
+    done
+    [ "$quiet" = yes ] || warn "installed $key in $dir"
+}
+
+# ffmpeg first: it is one code path for every format and is already
+# needed for -r on the local engines. The single-format encoders are the
+# fallback for a machine without it.
+encoder_for() {
+    case $1 in
+        wav)            printf 'none\n' ;;
+        mp3)            if have ffmpeg; then printf 'ffmpeg\n'
+                        elif have lame; then printf 'lame\n'; fi ;;
+        ogg|oga|vorbis) if have ffmpeg; then printf 'ffmpeg\n'
+                        elif have oggenc; then printf 'oggenc\n'; fi ;;
+        opus)           if have ffmpeg; then printf 'ffmpeg\n'
+                        elif have opusenc; then printf 'opusenc\n'; fi ;;
+        flac)           if have ffmpeg; then printf 'ffmpeg\n'
+                        elif have flac; then printf 'flac\n'; fi ;;
+        *)              if have ffmpeg; then printf 'ffmpeg\n'; fi ;;
+    esac
+}
+
+ffmpeg_codec() {
+    case $1 in
+        mp3)            printf 'libmp3lame\n' ;;
+        ogg|oga|vorbis) printf 'libvorbis\n' ;;
+        opus)           printf 'libopus\n' ;;
+        flac)           printf 'flac\n' ;;
+    esac
+}
+
+# Writing to a pipe leaves ffmpeg no extension to guess from, so the
+# muxer is named explicitly.
+ffmpeg_muxer() {
+    case $1 in
+        ogg|oga|vorbis) printf 'ogg\n' ;;
+        *)              printf '%s\n' "$1" ;;
+    esac
+}
+
+# dest is a path, or "-" for stdout. The encoders' own diagnostics are
+# left on stderr: when libvorbis refuses a bitrate, that message is the
+# useful part.
+transcode() {
+    local dest out src codec tool
+    src=$tmpdir/out.wav
+    dest=$1
+    # "-" means stdout to all of these. Anything else is a filename,
+    # and lame and opusenc take it as a bare operand, where a leading
+    # dash would be read as options.
+    if [ "$dest" = - ]; then
+        out=-
+    else
+        out=$(safe_path "$dest")
+    fi
+    tool=$(encoder_for "$format")
+    [ -n "$tool" ] ||
+        die "no encoder for $format: install ffmpeg, or the encoder" \
+            "for that format (lame, vorbis-tools, opus-tools, flac)"
+
+    case $tool in
+        ffmpeg)
+            codec=$(ffmpeg_codec "$format")
+            set -- -loglevel error -y -i "$src"
+            [ -z "$codec" ] || set -- "$@" -c:a "$codec"
+            case $format:$kbps in
+                *:)       ;;
+                flac:*)   set -- "$@" -compression_level "$kbps" ;;
+                *:*)      set -- "$@" -b:a "${kbps}k" ;;
+            esac
+            if [ "$dest" = - ]; then
+                set -- "$@" -f "$(ffmpeg_muxer "$format")" -
+            else
+                set -- "$@" "$out"
+            fi
+            ffmpeg "$@" </dev/null ;;
+        lame)
+            set -- --quiet
+            [ -z "$kbps" ] || set -- "$@" -b "$kbps"
+            lame "$@" "$src" "$out" ;;
+        oggenc)
+            set -- -Q
+            [ -z "$kbps" ] || set -- "$@" -b "$kbps"
+            oggenc "$@" -o "$out" "$src" ;;
+        opusenc)
+            set -- --quiet
+            [ -z "$kbps" ] || set -- "$@" --bitrate "$kbps"
+            opusenc "$@" "$src" "$out" ;;
+        flac)
+            set -- -s -f
+            [ -z "$kbps" ] || set -- "$@" "-$kbps"
+            if [ "$dest" = - ]; then
+                flac "$@" -c "$src"
+            else
+                flac "$@" -o "$out" "$src"
+            fi ;;
+    esac || die "$tool could not write $format"
+}
+
+# Is there any tool on this machine that can drive this output?
+backend_usable() {
+    case $1 in
+        sndio) have aucat || have ffmpeg ;;
+        oss)   have ffmpeg ;;
+        pulse) have paplay || have ffplay || have ffmpeg || have cvlc ;;
+        alsa)  have aplay || have ffmpeg ;;
+        *)     return 1 ;;
+    esac
+}
+
+# aucat is sndio's own player and needs no format arguments; ffmpeg
+# covers the rest, having both an oss and an sndio output device.
+# $AUDIODEVICE is sndio's own variable, so it is honoured rather than
+# reinvented.
+play_via() {
+    case $1 in
+        sndio)
+            if have aucat; then
+                aucat -i "$2"
+            else
+                ffmpeg -loglevel error -i "$2" \
+                    -f sndio "${AUDIODEVICE:-default}" </dev/null
+            fi ;;
+        oss)
+            ffmpeg -loglevel error -i "$2" \
+                -f oss "$VOCALISE_OSS_DEVICE" </dev/null ;;
+        pulse)
+            if have paplay; then
+                paplay "$2"
+            elif have ffplay; then
+                ffplay -loglevel error -nodisp -autoexit "$2"
+            elif have ffmpeg; then
+                ffmpeg -loglevel error -i "$2" -f pulse default </dev/null
+            else
+                cvlc --intf dummy --play-and-exit -q "$2"
+            fi ;;
+        alsa)
+            if have aplay; then
+                aplay -q "$2"
+            else
+                ffmpeg -loglevel error -i "$2" -f alsa default </dev/null
+            fi ;;
+    esac
+}
+
+# Named output: that one or nothing, so a silent failure is reported
+# rather than papered over by a fallback the caller did not ask for.
+play_audio() {
+    local backend
+    if [ "$audio" != auto ]; then
+        backend_usable "$audio" ||
+            die "nothing here can play to $audio (ffmpeg drives every" \
+                "output; aucat sndio, paplay pulse, aplay alsa)"
+        play_via "$audio" "$1" || die "$audio output failed"
+        return 0
+    fi
+    for backend in $audio_auto; do
+        backend_usable "$backend" || continue
+        if play_via "$backend" "$1"; then
+            return 0
+        fi
+        [ "$quiet" = yes ] || warn "$backend output failed, trying the next"
+    done
+    die "no working audio output, tried $audio_auto; install ffmpeg" \
+        "or a player for one of them, or use -o to write a file"
+}
+
+# Every engine produces WAV, so that one is a copy and everything else
+# goes through an encoder.
+emit() {
+    if [ "$format" = wav ]; then
+        if [ "$1" = - ]; then
+            cat -- "$tmpdir/out.wav"
+        else
+            cp -- "$tmpdir/out.wav" "$(safe_path "$1")" ||
+                die "could not write $1"
+        fi
+    else
+        transcode "$1"
+    fi
+}
+
+# Announced on stderr so it never lands in audio redirected to stdout.
+# Riva synthesis is free on the catalogue and the local engines cost
+# nothing either; only Riva's rate limit bites.
+announce() {
+    local summary bytes coding
+    [ "$quiet" = no ] || return 0
+    bytes=$(wc -c < "$tmpdir/out.wav")
+    bytes=$((bytes - header_size))
+    coding=
+    if [ "$format" != wav ]; then
+        coding=", $format${kbps:+ ${kbps}k}"
+        [ "$format" != flac ] || coding=", $format${kbps:+ -$kbps}"
+    fi
+    summary=$(awk -v chars="$1" -v work="$2" -v detail="$3" \
+                  -v bytes="$bytes" -v rate="$rate" -v coding="$coding" '
+        BEGIN {
+            secs = bytes / 2 / rate
+            # Under a minute, m:ss truncates: 0.94 s of audio reads
+            # as 0:00, which says "nothing came out" when something
+            # did. Seconds with a decimal below the minute, clock
+            # format above it.
+            if (secs < 1)          span = sprintf("%.2f s", secs)
+            else if (secs < 59.95) span = sprintf("%.1f s", secs)
+            else {
+                h = int(secs / 3600)
+                m = int((secs - h * 3600) / 60)
+                s = int(secs - h * 3600 - m * 60)
+                if (h > 0) span = sprintf("%d:%02d:%02d", h, m, s)
+                else       span = sprintf("%d:%02d", m, s)
+            }
+            printf "%d chars%s - %s audio, %d Hz%s (%s)",
+                   chars, work, span, rate, coding, detail
+        }')
+    printf '%s: %s\n' "$progname" "$summary" >&2
+}
+
+# Everything above is definitions; nothing runs until the whole file has
+# parsed. The variables main sets stay global on purpose: cleanup() runs
+# from the EXIT trap once main has returned, and a `local tmpdir` would
+# leave it nothing to remove.
+main() {
+    # The defaults come from the same table -l uses, so the mapping for
+    # English lives in exactly one place.
+    select_language en
+    while getopts E:A:l:v:m:r:s:f:b:dpLDqo:h opt; do
+        case $opt in
+            E) engine=$OPTARG ;;
+            A) audio=$OPTARG ;;
+            l) select_language "$OPTARG"; language_given=yes ;;
+            v) voice=$OPTARG ;;
+            m) explicit_model=$OPTARG ;;
+            r) rate=$OPTARG; rate_given=yes ;;
+            s) speed=$OPTARG ;;
+            f) format=$OPTARG ;;
+            b) bitrate=$OPTARG ;;
+            p) play=yes ;;
+            L) list=yes ;;
+            D) listremote=yes ;;
+            d) fetch=yes ;;
+            q) quiet=yes ;;
+            o) output=$OPTARG ;;
+            h) usage 0 ;;
+            *) usage ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    case $audio in
+        auto|sndio|oss|pulse|alsa) ;;
+        *) bad "unknown audio output: $audio (auto sndio oss pulse alsa)" ;;
+    esac
+    case $engine in
+        auto|offline|local|riva|piper|espeak) ;;
+        *) bad "unknown engine: $engine" \
+               "(auto offline local riva piper espeak)" ;;
+    esac
+    # Fetching is about the voice collection, not about speaking, so it
+    # runs before any engine is chosen and needs no text.
+    if [ "$fetch" = yes ] || [ "$listremote" = yes ]; then
+        # -D is discovery and says which engine each voice belongs to,
+        # so it needs no -E. -d installs, and is told exactly which
+        # engine it is installing for: a selector says only what order
+        # to try engines in, which is not an answer to that question.
+        if engine_is_exact "$engine" && ! fetch_capable "$engine"; then
+            die "$engine has no voices to download; only piper does"
+        fi
+
+        tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/$progname.XXXXXXXX") ||
+            die "could not create a temporary directory"
+        have jq || [ "$quiet" = yes ] ||
+            warn "jq is not installed; downloads cannot be md5-checked"
+        if [ "$listremote" = yes ]; then
+            list_remote > "$tmpdir/remote"
+            [ -s "$tmpdir/remote" ] ||
+                die "no piper voice published for $language"
+            cat -- "$tmpdir/remote"
+        fi
+        if [ "$fetch" = yes ]; then
+            if [ "$#" -gt 0 ]; then
+                for want do
+                    collect_matches "$want" > "$tmpdir/hits"
+                    if [ ! -s "$tmpdir/hits" ]; then
+                        # Naming -l would be misleading for a full key,
+                        # which was never looked for inside it.
+                        case $want in
+                            *-*-*) die "no voice $want; -D lists the" \
+                                       "ones there are" ;;
+                            *) die "no voice $want for $language;" \
+                                   "-D lists the ones there are" ;;
+                        esac
+                    fi
+                    # Which engine is only obvious when exactly one can
+                    # supply the name, and -d is not the place to guess.
+                    engine_is_exact "$engine" ||
+                        suggest_matches "say which engine the voice is for"
+                    [ "$(awk 'END { print NR }' < "$tmpdir/hits")" -eq 1 ] ||
+                        suggest_matches "$want matches more than one voice"
+                    fetch_voice "$(sed 's|^[^/]*/||' < "$tmpdir/hits")"
+                done
+            else
+                # No operand: everything the engine has for -l, or
+                # everything it has at all when -l was never given.
+                engine_is_exact "$engine" ||
+                    die "say which engine to download from: -E piper"
+                if [ "$language_given" = yes ]; then
+                    remote_voices "$engine" "$language" > "$tmpdir/all"
+                else
+                    remote_voices "$engine" '' > "$tmpdir/all"
+                fi
+                [ -s "$tmpdir/all" ] ||
+                    die "no $engine voice published for $language"
+                # Drop what is already installed before counting, so
+                # the announced size is the size of the download and
+                # not of the collection.
+                : > "$tmpdir/wanted"
+                dir=$(voice_dir)
+                while IFS= read -r key; do
+                    if [ -e "$dir/$key.onnx" ] &&
+                       [ -e "$dir/$key.onnx.json" ]; then
+                        continue
+                    fi
+                    printf '%s\n' "$key" >> "$tmpdir/wanted"
+                done < "$tmpdir/all"
+                mv -- "$tmpdir/wanted" "$tmpdir/all"
+                if [ ! -s "$tmpdir/all" ]; then
+                    [ "$quiet" = yes ] ||
+                        warn "every $engine voice for $language is" \
+                             "already installed"
+                    exit 0
+                fi
+                announce_bulk
+                while IFS= read -r key; do
+                    fetch_voice "$key"
+                done < "$tmpdir/all"
+            fi
+        fi
+        exit 0
+    fi
+
+    if [ -n "$explicit_model" ]; then
+        riva_model=$explicit_model
+    fi
+    resolve_engine
+
+    if [ "$list" = yes ]; then
+        list_voices
+        exit 0
+    fi
+
+    case $engine in
+        riva)
+            if [ -n "$voice" ]; then
+                voice=$(resolve_voice "$voice")
+            else
+                voice=$(voices_for "$riva_model" | sed -n '1p')
+                [ -n "$voice" ] || die "no default voice for $riva_model;" \
+                    "use -v"
+            fi ;;
+        espeak)
+            [ -n "$voice" ] || voice=$language ;;
+        piper)
+            case $voice in
+                '')    piper_model=$(piper_voices "$language" | sed -n '1p')
+                       [ -n "$piper_model" ] ||
+                           die "no piper voice for $language in" \
+                               "\$PIPER_VOICE_PATH" ;;
+                */*|*.onnx)
+                       piper_model=$voice
+                       [ -f "$piper_model" ] ||
+                           die "no such piper voice file: $voice" ;;
+                *)     piper_model=$(piper_pick "$voice") ;;
+            esac ;;
+    esac
+
+    case $rate in
+        ''|*[!0-9]*) bad "sample rate must be a whole number of Hz: $rate" ;;
+    esac
+    # 08000 satisfies [ -ge ] but is not a JSON number, and $(( )) would
+    # read it as octal, so strip the zeros by hand.
+    while :; do
+        case $rate in
+            0[0-9]*) rate=${rate#0} ;;
+            *)       break ;;
+        esac
+    done
+    [ "$rate" -ge "$rate_min" ] && [ "$rate" -le "$rate_max" ] ||
+        bad "sample rate $rate is outside $rate_min-$rate_max Hz"
+
+    if [ -n "$speed" ]; then
+        speed=$(resolve_speed "$speed")
+    fi
+
+    # -f wins, then -o's extension, then wav. Lowercased so that -o
+    # NOTE.WAV and -f WAV land on the copy path rather than an encoder.
+    if [ -z "$format" ]; then
+        case $output in
+            ''|-) format=wav ;;
+            *)    format=$(extension "$output") ;;
+        esac
+    fi
+    format=$(printf '%s' "$format" | tr '[:upper:]' '[:lower:]')
+
+    kbps=${bitrate%[kK]}
+    case $kbps in
+        '') [ -z "$bitrate" ] ||
+                bad "unreadable -b: $bitrate (a bitrate like 128k, or" \
+                    "0-8 for flac)" ;;
+        *[!0-9]*) bad "unreadable -b: $bitrate (a bitrate like 128k, or" \
+                      "0-8 for flac)" ;;
+    esac
+    if [ -n "$kbps" ]; then
+        case $format in
+            wav)  warn "-b has no effect on wav" ;;
+            flac) [ "$kbps" -le 8 ] ||
+                      bad "flac takes a compression level 0-8, not $bitrate" ;;
+        esac
+    fi
+
+    if [ "$engine" = riva ]; then
+        if [ -n "$OVH_AI_TTS_ENDPOINT" ]; then
+            endpoint=$OVH_AI_TTS_ENDPOINT
+        else
+            endpoint=https://$riva_model.$OVH_AI_ENDPOINTS_DOMAIN$endpoint_path
+        fi
+    fi
+
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/$progname.XXXXXXXX") ||
+        die "could not create a temporary directory"
+
+    if [ "$#" -eq 0 ]; then
+        if [ -t 0 ]; then
+            usage
+        fi
+        cat > "$tmpdir/text"
+    elif [ "$#" -eq 1 ] && [ "$1" = - ]; then
+        cat > "$tmpdir/text"
+    else
+        printf '%s\n' "$*" > "$tmpdir/text"
+    fi
+    # Whitespace alone is not text. Riva happens to catch it later,
+    # when split_text collapses it to nothing, but the local engines
+    # would render it as silence and report success.
+    grep -q '[^[:space:]]' < "$tmpdir/text" || die "no text to speak"
+    chars=$(wc -m < "$tmpdir/text")
+    chars=$((chars))
+    # A trailing newline is not part of the text: printf put one there
+    # that the operand never had, and stdin usually carries one too.
+    [ -n "$(tail -c 1 < "$tmpdir/text")" ] || chars=$((chars - 1))
+
+    pieces=1
+    case $engine in
+        riva)   synth_riva ;;
+        espeak) synth_espeak ;;
+        piper)  synth_piper ;;
+    esac
+    [ -s "$tmpdir/engine.wav" ] || die "the $engine engine produced no audio"
+    normalise_rate
+
+    case $engine in
+        riva)   if [ "$pieces" -eq 1 ]; then
+                    work=' in 1 request, free'
+                else
+                    work=" in $pieces requests, free"
+                fi
+                announce "$chars" "$work" "$riva_model, $voice" ;;
+        espeak) announce "$chars" '' "$(espeak_bin), $voice" ;;
+        piper)  announce "$chars" '' "piper, ${piper_model##*/}" ;;
+    esac
+
+    # Playing is what a bare "vocalise hello" at a prompt is asking
+    # for; a redirected or piped stdout is asking for the WAV itself.
+    # -p and -o together do both, the only reading that loses nothing.
+    if [ "$play" = auto ] && [ -z "$output" ] && [ -t 1 ]; then
+        play=yes
+    fi
+    case $output in
+        '') [ "$play" = yes ] || emit - ;;
+        -)  emit - ;;
+        *)  emit "$output" ;;
+    esac
+    if [ "$play" = yes ]; then
+        play_audio "$tmpdir/out.wav"
+    fi
+}
+
+main "$@"

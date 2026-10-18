@@ -1,0 +1,31 @@
+#!/bin/sh
+# espeak-ng: logs its arguments to $ESPEAK_LOG; --voices=LANG lists one
+# voice when LANG is in $ESPEAK_LANGS ("fr nl"), none otherwise; -w FILE
+# writes a 22050 Hz WAV with one byte of audio per byte of the -f text.
+printf '%s\n' "$*" >> "${ESPEAK_LOG:-/dev/null}"
+case ${1-} in
+--voices=*)
+    printf 'Pty Language       Age/Gender VoiceName          File\n'
+    for l in ${ESPEAK_LANGS-}; do
+        [ "$l" != "${1#--voices=}" ] || printf ' 5  %s  M  %s  roa/%s\n' "$l" "$l" "$l"
+    done
+    exit 0
+    ;;
+esac
+out=''
+text=''
+prev=''
+for arg; do
+    case $prev in
+    -w) out=$arg ;;
+    -f) text=$arg ;;
+    esac
+    prev=$arg
+done
+n=$(wc -c < "$text")
+# RIFF, 22050 Hz (0x5622) at byte 24, then the payload
+{
+    printf 'RIFF0000WAVEfmt 0000\001\000\001\000\042\126\000\000'
+    printf '0000\002\000\020\000data0000'
+    head -c "$n" /dev/zero
+} > "$out"

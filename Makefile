@@ -19,7 +19,7 @@ INSTALL   ?= install
 SH        ?= sh
 SHELLCHECK?= shellcheck
 
-.PHONY: help check check-syntax check-lint tests install uninstall \
+.PHONY: help check check-syntax check-lint check-shared tests install uninstall \
 	install-links uninstall-links
 
 # First target, so a bare `make` runs it. .DEFAULT_GOAL and .MAIN would
@@ -48,7 +48,7 @@ help:						## show this help (the default)
 	@echo ''
 	@echo 'There is no build target: the scripts run from bin/ as they are.'
 
-check: check-syntax check-lint			## preflight: every script parses and lints clean
+check: check-syntax check-lint check-shared	## preflight: every script parses, lints clean, shares one copy
 check-syntax:					## every script and test parses under SH
 	@for f in bin/* tests/*.sh tests/fake/*; do \
 	    $(SH) -n "$$f" || { echo "make: $$f does not parse" >&2; exit 1; }; \
@@ -58,6 +58,9 @@ check-lint:					## shellcheck finds nothing in the scripts or the tests
 	    { echo 'make: $(SHELLCHECK) not found (pkg install hs-ShellCheck)' >&2; \
 	      exit 1; }
 	@$(SHELLCHECK) -x bin/* tests/*.sh tests/fake/*
+
+check-shared:					## transcribe and vocalise still share the same functions
+	@sh tests/check-shared.sh
 
 tests:						## run the suite: every script, against stand-ins, under SH
 	@SH='$(SH)' sh tests/run.sh

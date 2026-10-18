@@ -19,6 +19,8 @@ installed under a prefix; there is nothing to build.
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
 | `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `term-title` | set the terminal's window title or icon name (the window name under screen and tmux), or run a command under its own title and restore the old one | a terminal that speaks xterm's title sequences, or screen or tmux |
+| `transcribe` | transcribe audio with Whisper on OVHcloud AI Endpoints, announcing the duration and cost first | `curl`; `ffmpeg` and `ffprobe` to resample and measure, when present |
+| `vocalise` | speak text: OVHcloud's Riva voices, or piper and espeak-ng locally, to a file or to the speakers | `curl` for Riva; `piper` or `espeak-ng` offline; `ffmpeg` (or `lame`, `oggenc`, `opusenc`, `flac`) for anything but WAV |
 | `vpn-status` | list the VPN tunnels that are up, one word each, marking a WireGuard tunnel that no longer answers; `-p` for polybar | `ifconfig` (FreeBSD) or sysfs (Linux), `wg` for WireGuard |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
@@ -60,14 +62,16 @@ make tests                      # the suite
 make tests SH=dash              # the suite, with the scripts run under dash
 ```
 
-`make check` needs `shellcheck`. `make tests` runs every tool against
-stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
-`ssh`, `sysctl`, `ifconfig`, `xrandr`, `qrencode`, `wg`, `ps`,
-`pdftoppm`, `magick`, `cjpeg`, `uname` and the priority tools, and a
-sysfs tree for Linux, so it touches no pool, no network and no router,
-and it takes the FreeBSD and the Linux branch of each tool on either
-system. Each `tests/t-*.sh` names what it checks in its header and
-prints one line per check.
+`make check` needs `shellcheck`; it also checks that the functions
+`transcribe` and `vocalise` share are still the same in both. `make
+tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
+`curl`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,
+`qrencode`, `wg`, `ps`, `pdftoppm`, `magick`, `cjpeg`, `ffmpeg`,
+`ffprobe`, `espeak-ng`, `uname` and the priority tools, and a sysfs tree
+for Linux, so it touches no pool, no network and no router, and it takes
+the FreeBSD and the Linux branch of each tool on either system. Each
+`tests/t-*.sh` names what it checks in its header and prints one line
+per check.
 
 
 ## Known shortfalls
@@ -97,6 +101,10 @@ prints one line per check.
 - `vpn-status` on Linux needs root for two things: `wg` answers only
   root, so a dead WireGuard tunnel is not marked, and the owner of a tun
   device run by root is not visible, so it is labelled by its name.
+- `vocalise`'s Linux audio outputs, pulse and alsa, are new and have
+  not been tried on real hardware.
+- `transcribe -f srt` and `-f vtt` are refused by the API today, with
+  HTTP 400, though it advertises them.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
 - The suite covers the local half of `openwrt-acl`, not the script it

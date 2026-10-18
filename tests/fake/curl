@@ -1,12 +1,55 @@
 #!/bin/sh
-# curl: records its arguments in $CURL_ARGV, one per line, and its stdin
-# in $CURL_STDIN, then answers $CURL_BODY with status $CURL_CODE (200), or
-# fails as curl does with $CURL_EXIT.
+# curl: records its arguments in $CURL_ARGV, one per line; with -K - its
+# stdin in $CURL_STDIN, with -K FILE a copy of that file in $CURL_CONFIG.
+# It answers $CURL_BODY with status $CURL_CODE (200): with -o, the body
+# into that file and the status alone on stdout, else both on stdout.
+# $CURL_EXIT makes it fail as curl does.
+#
+# With $CURL_RIVA set it plays Riva's synthesis endpoint instead: each
+# request (--data-binary @FILE) is appended to $CURL_REQUESTS, and
+# answered with a 44-byte WAV header and one byte of audio per character
+# of text -- or, when the text is longer than $CURL_RIVA, with the 400
+# Riva gives for too much input.
 printf '%s\n' "$@" > "$CURL_ARGV"
-cat > "$CURL_STDIN"
+out=''
+cfg=''
+data=''
+prev=''
+for arg; do
+    case $prev in
+    -o) out=$arg ;;
+    -K) cfg=$arg ;;
+    --data-binary) data=${arg#@} ;;
+    esac
+    prev=$arg
+done
+case $cfg in
+'') ;;
+-) cat > "$CURL_STDIN" ;;
+*) cp -- "$cfg" "${CURL_CONFIG:-/dev/null}" ;;
+esac
 if [ -n "${CURL_EXIT-}" ]; then
     printf 'curl: (7) Failed to connect\n' >&2
     exit "$CURL_EXIT"
 fi
+
+code=${CURL_CODE:-200}
 body=${CURL_BODY-'{"status":1,"request":"req-1"}'}
-printf '%s\n%s' "$body" "${CURL_CODE:-200}"
+if [ -n "${CURL_RIVA-}" ] && [ -n "$data" ]; then
+    cat -- "$data" >> "$CURL_REQUESTS"
+    text=$(sed 's/.*"text":"//; s/"}$//' "$data")
+    if [ "${#text}" -gt "$CURL_RIVA" ]; then
+        code=400
+        body='{"error":"maximum input length exceeded"}'
+    else
+        code=200
+        body=$(printf 'RIFF0000WAVEfmt 0123456789abcdefghijdata0000%s' \
+            "$(printf '%s' "$text" | sed 's/./x/g')")
+    fi
+fi
+if [ -n "$out" ]; then
+    printf '%s' "$body" > "$out"
+    printf '%s' "$code"
+else
+    printf '%s\n%s' "$body" "$code"
+fi

@@ -1,0 +1,17 @@
+#!/bin/sh
+# ffmpeg: logs its arguments to $FFMPEG_LOG, then copies its -i input to
+# the output named last ("-" is stdout), prefixed by "FFMPEG:".
+printf '%s\n' "$*" >> "${FFMPEG_LOG:-/dev/null}"
+in=''
+prev=''
+for arg; do
+    [ "$prev" != -i ] || in=$arg
+    prev=$arg
+done
+for out; do :; done
+if [ "$out" = - ]; then
+    printf 'FFMPEG:'
+    cat -- "$in"
+else
+    { printf 'FFMPEG:'; cat -- "$in"; } > "$out"
+fi

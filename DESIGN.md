@@ -132,6 +132,19 @@ server on a tun owner's command line, a peer's endpoint; nothing is kept
 in a file of the script's own.
 
 
+## transcribe and vocalise: one copy each, kept identical
+
+Both talk to OVHcloud AI Endpoints and share their credential code: the
+token lookup (environment, token file, `~/.authinfo`, aichat's config),
+its hand-off to curl, and a few helpers. Every tool here is a single file
+that runs on its own -- it can be copied to a server alone -- so rather
+than a shared library each keeps a copy, and `make check-shared` fails as
+soon as the copies differ. The token is written into a curl config line
+between double quotes, where a quote or a backslash would end the value
+early and leave the rest to be read as curl options, so a token outside a
+bearer token's alphabet (RFC 6750) is refused rather than escaped.
+
+
 ## shrinkpdf: never worse than the input
 
 Ghostscript writes to a temporary file, and only then is the smaller of

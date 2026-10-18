@@ -1,0 +1,3 @@
+#!/bin/sh
+# ffprobe: answers a duration query with $FFPROBE_DURATION, or N/A.
+printf '%s\n' "${FFPROBE_DURATION:-N/A}"

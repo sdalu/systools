@@ -1,0 +1,436 @@
+#!/bin/sh
+# transcribe — transcribe audio with Whisper on OVHcloud AI Endpoints
+# usage: transcribe [-t] [-m model] [-l lang] [-f format] [-p prompt]
+#                   [-d] [-w] [-n] [-q] [-o file] file...
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+readonly progname="${0##*/}"
+readonly fast_model=whisper-large-v3-turbo
+readonly exact_model=whisper-large-v3
+
+# Whisper is billed per second of audio, not per token, so the cost is
+# known before the request is made. EUR per second, from the OVHcloud
+# catalogue; a model given with -m has no known rate.
+# Whisper conditions on at most the last 224 tokens of prompt, roughly 900
+# characters. Beyond that the extra text is silently discarded, and a long
+# or repetitive prompt makes the model echo it back in place of the
+# transcript, so refuse rather than let that happen.
+readonly prompt_limit=900
+
+readonly fast_rate=0.00001278
+readonly exact_rate=0.00004083
+
+: "${OVH_AI_ENDPOINTS_DOMAIN:=endpoints.kepler.ai.cloud.ovh.net}"
+: "${OVH_AI_ENDPOINT:=https://oai.$OVH_AI_ENDPOINTS_DOMAIN/v1}"
+: "${OVH_AI_TOKEN_FILE:=$HOME/.config/ovhcloud/ai-token}"
+# One token serves every AI Endpoints model, so the ~/.authinfo machine
+# is the OpenAI-compatible host whatever model is called.
+: "${OVH_AI_AUTHINFO_HOST:=oai.$OVH_AI_ENDPOINTS_DOMAIN}"
+: "${AICHAT_CONFIG:=$HOME/.config/aichat/config.yaml}"
+
+model=$exact_model
+format=text
+language=
+prompt=
+diarize=no
+words=no
+convert=yes
+quiet=no
+show_model=no
+output=
+tmpdir=
+
+cleanup() {
+    if [ -n "$tmpdir" ]; then
+        rm -rf -- "$tmpdir"
+    fi
+}
+trap cleanup EXIT
+# A signal ends the run; the EXIT trap then cleans up.
+trap 'exit 130' INT
+trap 'exit 1' HUP TERM
+
+die() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+    exit 1
+}
+
+# A usage error: a value no option takes.
+bad() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+    exit 2
+}
+
+warn() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+}
+
+usage_text() {
+    local pad
+    # $progname is whatever the script was invoked as, so the
+    # continuation line is padded to match rather than by hand.
+    pad=$(printf '%s' "usage: $progname " | sed 's/./ /g')
+    cat <<EOF
+usage: $progname [-t] [-m model] [-l lang] [-f format] [-p prompt]
+${pad}[-d] [-w] [-n] [-q] [-o file] file...
+
+  -t         turbo: use $fast_model, roughly 3x
+             cheaper and faster, but prone to hallucinating on
+             silence (default: $exact_model)
+  -m model   explicit model name
+  -l lang    source language hint (ISO 639-1, e.g. en, fr)
+  -f format  text (default), json, verbose_json; srt and vtt are
+             advertised by the API but rejected with HTTP 400 today
+  -p prompt  bias the decoder (names, jargon, spelling); one or two
+             natural sentences, at most $prompt_limit characters
+  -d         diarize: label speaker turns (implies verbose_json)
+  -w         word-level timestamps (implies verbose_json)
+  -n         upload as-is, skip the ffmpeg resample to 16 kHz mono
+  -q         quiet: do not announce duration and cost on stderr
+  -M         print the model these flags select, and stop
+  -o file    write to file instead of stdout (one input only)
+
+Credentials are read from \$OVH_AI_TOKEN, then
+\$OVH_AI_ENDPOINTS_API_KEY, then \$OVH_AI_TOKEN_FILE
+($OVH_AI_TOKEN_FILE), then the password of the
+$OVH_AI_AUTHINFO_HOST entry in ~/.authinfo or ~/.netrc, then the
+OVH client's api_key in $AICHAT_CONFIG.
+EOF
+}
+
+# -h is a request, so it answers on stdout and exits 0; anything
+# else reaching here is a usage error, which belongs on stderr.
+usage() {
+    local status
+    status=${1-2}
+    if [ "$status" -eq 0 ]; then
+        usage_text
+    else
+        usage_text >&2
+    fi
+    exit "$status"
+}
+
+# Convenience fallback: the api_key of the openai-compatible client named
+# OVH. Keyed on the preceding "name: OVH" so the other clients' keys in the
+# same file are never picked up.
+aichat_token() {
+    [ -r "$AICHAT_CONFIG" ] || return 1
+    awk '
+        /^-[[:space:]]/                            { ovh = 0 }
+        /^[[:space:]]*name:[[:space:]]*OVH[[:space:]]*$/ { ovh = 1 }
+        ovh && /^[[:space:]]*api_key:[[:space:]]/  {
+            sub(/^[[:space:]]*api_key:[[:space:]]*/, "")
+            print
+            exit
+        }
+    ' "$AICHAT_CONFIG"
+}
+
+# The password of the first ~/.authinfo, then ~/.netrc, entry for the AI
+# Endpoints host, as caldav reads them: # comment lines are skipped and a
+# trailing backslash joins a line to the next.
+authinfo_token() {
+    local file
+    for file in "$HOME/.authinfo" "$HOME/.netrc"; do
+        [ -r "$file" ] || continue
+        awk -v host="$OVH_AI_AUTHINFO_HOST" '
+            /^[[:space:]]*#/ { next }
+            {
+                sub(/\\$/, "")
+                n = split($0, w)
+                for (j = 1; j <= n; j++) word[++nw] = w[j]
+            }
+            END {
+                for (i = 1; i <= nw; i++) {
+                    if (word[i] == "default")  { cur = ""; continue }
+                    if (word[i] == "machine")  { cur = word[++i]; continue }
+                    if (cur == host && word[i] == "password") {
+                        print word[i + 1]
+                        exit 0
+                    }
+                    i++
+                }
+                exit 1
+            }
+        ' "$file" && return 0
+    done
+    return 1
+}
+
+# OVH_AI_ENDPOINTS_API_KEY is the name OVH's own documentation and SDK
+# samples use; OVH_AI_TOKEN is this tool's older name.  Both name the same
+# AI Endpoints bearer token, so accept either rather than making a
+# deployment carry the identical secret twice under two names.
+read_token() {
+    if [ -n "${OVH_AI_TOKEN:-}" ]; then
+        printf '%s\n' "$OVH_AI_TOKEN"
+    elif [ -n "${OVH_AI_ENDPOINTS_API_KEY:-}" ]; then
+        printf '%s\n' "$OVH_AI_ENDPOINTS_API_KEY"
+    elif [ -r "$OVH_AI_TOKEN_FILE" ]; then
+        head -n 1 -- "$OVH_AI_TOKEN_FILE"
+    else
+        authinfo_token || aichat_token
+    fi
+}
+
+# The token goes into a curl config line between double quotes, where a
+# quote or a backslash would end it early and leave the rest to be read
+# as curl options; anything outside a bearer token's alphabet (RFC 6750)
+# is refused rather than escaped. As an -H argument the token would sit
+# in curl's argv, which ps shows to every user on the machine; a config
+# file inside the 0700 temp directory keeps it off the process table.
+stage_credentials() {
+    local token
+    token=$(read_token) || token=
+    [ -n "$token" ] ||
+        die "no API token: set OVH_AI_TOKEN or OVH_AI_ENDPOINTS_API_KEY," \
+            "or write $OVH_AI_TOKEN_FILE"
+    case $token in
+        *[!A-Za-z0-9._~+/=-]*)
+            die "the API token holds a character no bearer token has;" \
+                "check where it was read from" ;;
+    esac
+    (umask 077
+     printf 'header = "Authorization: Bearer %s"\n' "$token" \
+         > "$tmpdir/curlrc") || die "could not stage the credentials"
+}
+
+# A path that can never be read as an option by a tool lacking "--".
+safe_path() {
+    case $1 in
+        -*) printf '%s\n' "./$1" ;;
+        *)  printf '%s\n' "$1"   ;;
+    esac
+}
+
+# The extension is a property of the basename: a dot in a directory
+# name ("dir.v2/clip") is not one, and neither is the leading dot of a
+# dotfile. Getting this wrong put a slash into stage()'s temp filename.
+extension() {
+    local base ext
+    base=${1##*/}
+    case $base in
+        .*.*|[!.]*.*) ext=${base##*.} ;;
+        *)            ext= ;;
+    esac
+    # The staged name is handed to curl's -F, where "," separates files
+    # and ";" starts a parameter. Keep the leading run of alphanumerics
+    # and drop the rest: an RCS "clip.wav,v" is still a wav, and the
+    # extension only has to tell the API which format it is looking at.
+    ext=${ext%%[!A-Za-z0-9]*}
+    printf '%s\n' "${ext:-bin}"
+}
+
+# Whisper resamples to 16 kHz mono internally, so doing it up front loses
+# no accuracy and shrinks the upload substantially on stereo or 44.1 kHz
+# sources. Staging into tmpdir also keeps odd characters in the original
+# filename out of curl's -F parsing.
+stage() {
+    local src stem dst
+    src=$(safe_path "$1")
+    stem=$tmpdir/audio$2
+
+    if [ "$convert" = yes ] && command -v ffmpeg >/dev/null 2>&1; then
+        dst=$stem.flac
+        ffmpeg -loglevel error -y -i "$src" -ar 16000 -ac 1 "$dst" \
+            </dev/null || die "ffmpeg failed on $1"
+    else
+        dst=$stem.$(extension "$1")
+        ln -s -- "$(abspath "$src")" "$dst"
+    fi
+    printf '%s\n' "$dst"
+}
+
+rate_for() {
+    case $1 in
+        "$fast_model")  printf '%s\n' "$fast_rate"  ;;
+        "$exact_model") printf '%s\n' "$exact_rate" ;;
+    esac
+}
+
+duration_of() {
+    local seconds
+    command -v ffprobe >/dev/null 2>&1 || return 1
+    seconds=$(ffprobe -v error -show_entries format=duration \
+        -of default=noprint_wrappers=1:nokey=1 "$(safe_path "$1")" \
+        </dev/null 2>/dev/null) || return 1
+    # ffprobe answers N/A for anything it cannot measure.
+    case $seconds in
+        ''|*[!0-9.]*) return 1 ;;
+    esac
+    printf '%s\n' "$seconds"
+}
+
+# Announced on stderr so it never lands in a redirected transcript.
+announce() {
+    local seconds rate summary
+    [ "$quiet" = no ] || return 0
+    seconds=$(duration_of "$1" || true)
+    rate=$(rate_for "$model")
+    summary=$(awk -v name="$1" -v secs="$seconds" -v rate="$rate" \
+                  -v model="$model" '
+        BEGIN {
+            if (secs == "") { printf "%s (%s)", name, model; exit }
+            # Under a minute, m:ss truncates: 0.94 s of audio reads
+            # as 0:00, which says "nothing came out" when something
+            # did. Seconds with a decimal below the minute, clock
+            # format above it.
+            if (secs < 1)          span = sprintf("%.2f s", secs)
+            else if (secs < 59.95) span = sprintf("%.1f s", secs)
+            else {
+                h = int(secs / 3600)
+                m = int((secs - h * 3600) / 60)
+                s = int(secs - h * 3600 - m * 60)
+                if (h > 0) span = sprintf("%d:%02d:%02d", h, m, s)
+                else       span = sprintf("%d:%02d", m, s)
+            }
+            if (rate == "") { printf "%s - %s audio (%s)", name, span, model
+                              exit }
+            cost = secs * rate
+            printf "%s - %s audio, %s EUR (%s)", name, span,
+                   (cost < 0.0001) ? "<0.0001" : sprintf("~%.4f", cost), model
+        }')
+    printf '%s: %s\n' "$progname" "$summary" >&2
+}
+
+abspath() {
+    case $1 in
+        /*) printf '%s\n' "$1" ;;
+        *)  printf '%s/%s\n' "$(pwd)" "$1" ;;
+    esac
+}
+
+# Only the audio is an upload: every other field is a literal value, and
+# -F would read a file for any of them that began with "@" or "<".
+# --form-string is the same field without that reading.
+request() {
+    local audio body code status
+    audio=$1
+    body=$tmpdir/body
+
+    set -- -sS -o "$body" -w '%{http_code}' \
+        -X POST "$OVH_AI_ENDPOINT/audio/transcriptions" \
+        -K "$tmpdir/curlrc" \
+        --form-string "model=$model" \
+        --form-string "response_format=$format" \
+        -F "file=@$audio"
+    if [ -n "$language" ]; then
+        set -- "$@" --form-string "language=$language"
+    fi
+    if [ -n "$prompt" ]; then
+        set -- "$@" --form-string "prompt=$prompt"
+    fi
+    if [ "$diarize" = yes ]; then
+        set -- "$@" --form-string "diarize=true"
+    fi
+    if [ "$words" = yes ]; then
+        set -- "$@" --form-string 'timestamp_granularities[]=word'
+    fi
+
+    status=0
+    code=$(curl "$@") || status=$?
+    [ "$status" -eq 0 ] ||
+        die "curl failed (exit $status) talking to $OVH_AI_ENDPOINT"
+    case $code in
+        2??) cat < "$body"
+             # The API omits the trailing newline, which would run the
+             # transcript into the next prompt or the next file's output.
+             if [ -n "$(tail -c 1 < "$body")" ]; then
+                 printf '\n'
+             fi ;;
+        *)   sed -n '1,5p' < "$body" >&2
+             die "HTTP $code from the transcription endpoint" ;;
+    esac
+}
+
+# Everything above is definitions; nothing runs until the
+# whole file has parsed. The variables main sets stay global
+# on purpose: cleanup() runs from the EXIT trap once main has
+# returned, and a `local tmpdir` would leave it nothing to
+# remove.
+main() {
+    while getopts tm:l:f:p:dwnqo:hM opt; do
+        case $opt in
+            t) model=$fast_model ;;
+            m) model=$OPTARG ;;
+            l) language=$OPTARG ;;
+            f) format=$OPTARG ;;
+            p) prompt=$OPTARG ;;
+            d) diarize=yes ;;
+            w) words=yes ;;
+            n) convert=no ;;
+            q) quiet=yes ;;
+            M) show_model=yes ;;
+            o) output=$OPTARG ;;
+            h) usage 0 ;;
+            *) usage ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+    # -M answers which model these flags select, and stops. A caller
+    # recording how a transcript was made should not have to know
+    # this script's defaults, nor pin one with -m to find out. Before
+    # the check for a file, because it is a question about the flags
+    # and not about any recording.
+    if [ "$show_model" = yes ]; then
+        printf '%s\n' "$model"
+        exit 0
+    fi
+
+    [ "$#" -gt 0 ] || usage
+    [ -z "$output" ] || [ "$#" -eq 1 ] ||
+        bad "-o takes a single input file (got $#)"
+
+    case $format in
+        text|json|verbose_json|srt|vtt) ;;
+        *) bad "unknown format: $format (text json verbose_json srt vtt)" ;;
+    esac
+    if [ "$diarize" = yes ] || [ "$words" = yes ]; then
+        format=verbose_json
+    fi
+
+    if [ -n "$prompt" ]; then
+        # The limit is characters, so -m: an accented French prompt is
+        # shorter than its byte count. wc pads on the BSD userland.
+        prompt_size=$(printf '%s' "$prompt" | wc -m)
+        prompt_size=$((prompt_size))
+        [ "$prompt_size" -le "$prompt_limit" ] ||
+            bad "prompt is $prompt_size characters, limit is $prompt_limit;" \
+                "Whisper keeps only the last 224 tokens, and a longer prompt" \
+                "can be echoed back in place of the transcript"
+        [ "$quiet" = yes ] ||
+            warn "prompt set ($prompt_size chars) - biases spelling" \
+                 "and style, and its words can appear even if never" \
+                 "spoken"
+    fi
+
+    # FreeBSD base ships fetch, which cannot do multipart/form-data uploads.
+    command -v curl >/dev/null 2>&1 ||
+        die "curl is required for multipart uploads (pkg install curl)"
+
+    tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/$progname.XXXXXXXX") ||
+        die "could not create a temporary directory"
+    stage_credentials
+
+    n=0
+    for file do
+        [ -r "$file" ] || die "cannot read $file"
+        n=$((n + 1))
+        announce "$file"
+        audio=$(stage "$file" "$n")
+        if [ -n "$output" ]; then
+            # Redirecting straight onto $output truncated it before the
+            # request was made, so a failed run destroyed the previous
+            # transcript. Land it in tmpdir and copy only on success.
+            request "$audio" > "$tmpdir/out"
+            cp -- "$tmpdir/out" "$output" || die "could not write $output"
+        else
+            request "$audio"
+        fi
+    done
+}
+
+main "$@"
