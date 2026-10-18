@@ -1,0 +1,5 @@
+#!/bin/sh
+# pgrep: logs its arguments to $PGREP_LOG; finds picom when $PICOM_STATE
+# exists.
+printf '%s\n' "$*" >> "${PGREP_LOG:-/dev/null}"
+[ -e "${PICOM_STATE-}" ] && printf '4242\n'

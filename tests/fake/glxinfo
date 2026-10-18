@@ -1,0 +1,5 @@
+#!/bin/sh
+# glxinfo: reports $GLXINFO_RENDERER as the OpenGL renderer, or fails as
+# without an X server when it is empty.
+[ -n "${GLXINFO_RENDERER-}" ] || exit 1
+printf 'name of display: :0\nOpenGL renderer string: %s\n' "$GLXINFO_RENDERER"

@@ -1,0 +1,6 @@
+#!/bin/sh
+# pkill: logs its arguments to $PGREP_LOG; stops picom by removing
+# $PICOM_STATE, unless $PICOM_STUCK.
+printf '%s\n' "$*" >> "${PGREP_LOG:-/dev/null}"
+[ -e "${PICOM_STATE-}" ] || exit 1
+[ -n "${PICOM_STUCK-}" ] || rm -f -- "$PICOM_STATE"

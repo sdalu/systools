@@ -1,0 +1,140 @@
+#!/bin/sh
+# compositor-picom — run the picom compositor at a chosen effect level
+# usage: compositor-picom [-f] start|off|status|tear|light|full
+#
+# Levels, each a picom config in ~/.config/picom/<level>.conf:
+#   tear   tear-free only (vsync), cheapest
+#   light  plus open and close fades
+#   full   plus shadows and inactive transparency
+# The level last chosen, off included, is remembered in
+# ~/.config/picom/level, and start restores it, so a window manager can
+# run "compositor-picom start" at login (i3: exec --no-startup-id
+# compositor-picom start).  Only this user's picom is seen and stopped.
+#
+# Compositing on a software-rendered X server (llvmpipe, softpipe: no
+# usable DRI3 or glamor) leaves black rectangles that never refresh, so
+# it is refused unless -f; without glxinfo the renderer cannot be asked,
+# which is said and not refused.
+# Exit status: 0 success (status: running), 1 failure (status: not
+# running), 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+confdir=$XDG_CONFIG_HOME/picom
+statefile=$confdir/level
+readonly default_level=light
+
+# picom and glxinfo live in /usr/local/bin on FreeBSD, which is not on
+# every session manager's PATH.
+PATH=$PATH:/usr/local/bin
+
+usage() {
+    printf 'usage: %s [-f] start|off|status|tear|light|full\n' "$prog"
+    printf '  -f  force: composite even on a software-rendered X server\n'
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+saved_level() {
+    local level
+    level=$(cat -- "$statefile" 2> /dev/null) || level=
+    case $level in
+    tear | light | full | off) printf '%s\n' "$level" ;;
+    *) printf '%s\n' "$default_level" ;;
+    esac
+}
+
+save_level() {
+    if ! { mkdir -p -- "$confdir" && printf '%s\n' "$1" > "$statefile"; }
+    then
+        die "could not remember the level in $statefile"
+    fi
+}
+
+running() {
+    pgrep -x -u "$(id -u)" picom > /dev/null 2>&1
+}
+
+check_renderer() {
+    local renderer
+    [ "$force" -eq 0 ] || return 0
+    if ! command -v glxinfo > /dev/null 2>&1; then
+        printf '%s: no glxinfo, so the renderer is not checked\n' "$prog" >&2
+        return 0
+    fi
+    renderer=$(glxinfo -B 2> /dev/null |
+        sed -n 's/^OpenGL renderer string: //p')
+    case $renderer in
+    '') die "glxinfo cannot reach the X server; use -f to start anyway" ;;
+    *llvmpipe* | *softpipe*)
+        die "X is software-rendered ($renderer): refusing to composite;" \
+            "fix DRI3 (GuC, glamor) or use -f" ;;
+    esac
+}
+
+stop_picom() {
+    local n=0
+    pkill -x -u "$(id -u)" picom 2> /dev/null || :
+    while running; do
+        sleep 0.2
+        n=$((n + 1))
+        [ "$n" -lt 10 ] || die "picom refuses to die"
+    done
+}
+
+start_level() {
+    local conf="$confdir/$1.conf"
+    [ -r "$conf" ] || die "missing profile: $conf"
+    command -v picom > /dev/null 2>&1 || die "picom is not installed"
+    check_renderer
+    stop_picom
+    picom -b --config "$conf" || die "picom would not start with $conf"
+}
+
+force=0
+while getopts fh opt; do
+    case $opt in
+    f) force=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+
+case $1 in
+tear | light | full)
+    start_level "$1"
+    save_level "$1"
+    ;;
+off)
+    stop_picom
+    save_level off
+    ;;
+start)
+    level=$(saved_level)
+    [ "$level" = off ] || start_level "$level"
+    ;;
+status)
+    level=$(saved_level)
+    if running; then
+        printf 'running (level: %s)\n' "$level"
+    else
+        printf 'not running (saved level: %s)\n' "$level"
+        exit 1
+    fi
+    ;;
+*)
+    usage >&2
+    exit 2
+    ;;
+esac

@@ -24,7 +24,7 @@ export ORIG_PATH PATH
 # zfs destroys snapshots: refuse to run at all rather than risk it.
 for tool in zfs curl ip route ssh uname nice idprio chrt ionice gs \
     sysctl ifconfig xrandr qrencode wg ps pdftoppm magick cjpeg ffmpeg \
-    ffprobe espeak-ng; do
+    ffprobe espeak-ng picom pgrep pkill glxinfo; do
     if [ "$(command -v "$tool")" != "$fakes/$tool" ]; then
         printf 'Bail out: %s does not resolve to tests/fake/%s\n' \
             "$tool" "$tool"

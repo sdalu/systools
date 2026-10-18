@@ -9,6 +9,7 @@ installed under a prefix; there is nothing to build.
 
 | Tool | What it does | Needs |
 |---|---|---|
+| `compositor-picom` | run picom at an effect level -- tear, light or full -- remembered for the next login, refusing a software-rendered X server | `picom`; `glxinfo` to check the renderer |
 | `default-gateway` | print the gateway of the default route, IPv4 or IPv6, in a given FIB or table; a route with no gateway prints its interface | `route` (FreeBSD), `ip` (Linux) |
 | `is-docked` | tell whether a laptop sits in its dock: on external power, with a USB network interface, and with an external screen | `sysctl` and `ifconfig`, with drm-kmod for the screen (else `xrandr` under X) on FreeBSD; sysfs only on Linux |
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
@@ -67,11 +68,11 @@ make tests SH=dash              # the suite, with the scripts run under dash
 tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
 `curl`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,
 `qrencode`, `wg`, `ps`, `pdftoppm`, `magick`, `cjpeg`, `ffmpeg`,
-`ffprobe`, `espeak-ng`, `uname` and the priority tools, and a sysfs tree
-for Linux, so it touches no pool, no network and no router, and it takes
-the FreeBSD and the Linux branch of each tool on either system. Each
-`tests/t-*.sh` names what it checks in its header and prints one line
-per check.
+`ffprobe`, `espeak-ng`, `picom`, `pgrep`, `pkill`, `glxinfo`, `uname`
+and the priority tools, and a sysfs tree for Linux, so it touches no
+pool, no network and no router, and it takes the FreeBSD and the Linux
+branch of each tool on either system. Each `tests/t-*.sh` names what it
+checks in its header and prints one line per check.
 
 
 ## Known shortfalls
