@@ -121,6 +121,9 @@ check_in "$(log "$NOTIFY_LOG")" "Saved as" "xclip fails: announced as saved only
 
 ds_ -d "$tmp/a&b" desktop
 check_in "$(log "$NOTIFY_LOG")" "file://$tmp/a&amp;b/" "markup: & escaped in the notification"
+ds_ -d "$tmp/a\"b" desktop
+check_in "$(log "$NOTIFY_LOG")" "file://$tmp/a&quot;b/" \
+    "markup: a quote escaped, so it cannot end the href early"
 
 ds_ -d "$pics" delay 1
 check_rc 0 "delay 1: succeeds"

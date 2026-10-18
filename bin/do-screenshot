@@ -96,9 +96,11 @@ active_window() {
         die "xdotool cannot tell the active window"
 }
 
-# markup TEXT — TEXT with &, < and > escaped for a notification body
+# markup TEXT — TEXT with &, <, > and " escaped for a notification body,
+# where it also sits inside a double-quoted href
 markup() {
-    printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+    printf '%s' "$1" |
+        sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g; s/"/\&quot;/g'
 }
 
 dir=${XDG_PICTURES_DIR:-$HOME/Pictures}
