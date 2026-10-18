@@ -15,6 +15,7 @@ installed under a prefix; there is nothing to build.
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
 | `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
+| `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
 | `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
@@ -79,6 +80,8 @@ its header and prints one line per check.
 - `openwrt-acl` defaults to the router `maxwell` and the SSID
   `rezo_zero`; set `OPENWRT_ACL_HOST` and `OPENWRT_ACL_SSID`, or use `-H`
   and `-s`.
+- `screen-mirror` works under X11 only; a Wayland session has no
+  `xrandr` to drive.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
 - The suite covers the local half of `openwrt-acl`, not the script it

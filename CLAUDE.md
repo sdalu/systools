@@ -10,7 +10,8 @@ Small system tools in POSIX sh, for FreeBSD and Linux.
 - `CHECKLIST.md` — what has to be true before a round here is done
 - `bin/` — the tools; each one's header comment is its documentation
 - `tests/` — the suite: `tests/lib.sh` (helpers), `tests/run.sh`, one
-  `t-*.sh` per tool, and stand-ins for external tools in `tests/fake/`
+  `t-*.sh` per tool, stand-ins for external tools in `tests/fake/`, and
+  recorded real output in `tests/data/`
 
 ## Gate
 

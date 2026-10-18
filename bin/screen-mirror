@@ -1,0 +1,291 @@
+#!/bin/sh
+#
+# screen-mirror [-n] [-v] [-k] [-m mode] [-s source] [target ...]
+# screen-mirror -l
+# screen-mirror -x
+#
+# Mirror one output onto every other connected output, under X11, on
+# FreeBSD and Linux alike: the generic form of
+#
+#     xrandr --output eDP-1  --mode 1920x1080 --pos 0x0 \
+#            --output HDMI-1 --mode 1920x1080 --same-as eDP-1
+#
+# The source is the primary output unless -s names another; the targets are
+# every other connected output unless some are named as operands.
+#
+# Picking the mode is the whole job.  --auto is not it: a projector or a
+# cheap HDMI switch commonly advertises 1024x768 as its preferred mode, so
+# --auto mirrors at 1024x768.  By default every participating output is set
+# to the largest mode they all list, which is an exact pixel-for-pixel
+# mirror but can pull the internal panel below its native resolution
+# (1920x1200 -> 1920x1080 against a 1080p projector).  -k keeps the source
+# at its own mode and scales each target to it instead (--scale-from), at
+# the cost of a resampled, possibly stretched image on the target.  When no
+# mode is common to every output, -k is used whether asked for or not.
+#
+#   -n  dry run: print the xrandr command instead of running it
+#   -v  verbose: report the probe on stderr
+#   -k  keep the source mode, scale the targets to it
+#   -m  use this mode (WxH) instead of picking one
+#   -s  use this output as the source (default: the primary)
+#   -l  list the connected outputs and the modes they share, then exit
+#   -x  undo: targets off, source back to its preferred mode, no scaling
+#   -h  show this help
+#
+# -x is the quick way back; monitors-config restores the full configured
+# layout (external primary, internal below) for this location and dock state.
+#
+# Exit: 0 done, 1 nothing to mirror to or no usable mode, 2 usage error.
+#
+# shellcheck disable=SC3043 # 'local' is supported by every shell targeted here
+set -eu
+
+# xrandr lives in /usr/local/bin on FreeBSD, which is not in the PATH of
+# every session manager, and in /usr/bin on Linux.
+PATH=$PATH:/usr/local/bin
+: "${XRANDR:=xrandr}"
+
+progname=${0##*/}
+verbose=0
+dryrun=0
+probe=
+
+die()  { printf '%s: %s\n' "$progname" "$*" >&2; exit 1; }
+warn() { printf '%s: %s\n' "$progname" "$*" >&2; }
+log()  { [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$progname" "$*" >&2; }
+
+usage() {
+    printf 'usage: %s [-n] [-v] [-k] [-m mode] [-s source] [target ...]\n' \
+        "$progname"
+    printf '       %s -l\n' "$progname"
+    printf '       %s -x\n' "$progname"
+}
+
+bad_usage() {
+    usage >&2
+    exit 2
+}
+
+cleanup() { [ -z "$probe" ] || rm -f -- "$probe"; }
+
+# Run xrandr, or just show what would be run.  Every argument is a flag, an
+# output name or a mode, so none of them can contain whitespace.
+run() {
+    if [ "$dryrun" -ne 0 ]; then
+        printf 'xrandr %s\n' "$*"
+    else
+        "$XRANDR" "$@"
+    fi
+}
+
+# --- questions about the probe, one xrandr --query kept in a temp file so
+# --- that every answer below describes the same instant of the display state
+
+connected() { awk '$2 == "connected" { print $1 }' "$probe"; }
+
+primary() { awk '$2 == "connected" && $3 == "primary" { print $1; exit }' "$probe"; }
+
+is_connected() {
+    awk -v want="$1" '$1 == want && $2 == "connected" { found = 1 }
+                      END { exit !found }' "$probe"
+}
+
+# Every mode WxH an output lists, in xrandr's own order (largest first).
+modes_of() {
+    awk -v want="$1" '
+        /^[^ \t]/                              { out = $1; next }
+        out == want && $1 ~ /^[0-9]+x[0-9]+$/  { print $1 }
+    ' "$probe"
+}
+
+# The mode an output is driving right now; empty when it is off.
+current_mode() {
+    awk -v want="$1" '
+        $1 == want {
+            for (i = 2; i <= NF; i++)
+                if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) {
+                    sub(/\+.*/, "", $i)
+                    print $i
+                    exit
+                }
+        }
+    ' "$probe"
+}
+
+# The mode xrandr marks preferred (+), falling back to the first listed.
+preferred_mode() {
+    awk -v want="$1" '
+        /^[^ \t]/                             { out = $1; next }
+        out != want || $1 !~ /^[0-9]+x[0-9]+$/ { next }
+        {
+            if (first == "") first = $1
+            for (i = 2; i <= NF; i++)
+                if ($i ~ /\+/) { print $1; found = 1; exit }
+        }
+        END { if (!found && first != "") print first }
+    ' "$probe"
+}
+
+# The modes every output of a newline-separated list has in common, widest
+# first.  Empty when they share none, which is what forces the scaled path.
+common_modes() {
+    local count
+    count=$(printf '%s\n' "$1" | grep -c .)
+    printf '%s\n' "$1" \
+        | while IFS= read -r out; do modes_of "$out" | sort -u; done \
+        | sort | uniq -c \
+        | awk -v n="$count" '$1 == n { print $2 }' \
+        | sort -t x -k1,1nr -k2,2nr
+}
+
+# The mode with the most pixels, read from a WxH list on stdin.
+largest_mode() {
+    awk -F x '
+        { area = $1 * $2; if (area > best) { best = area; mode = $0 } }
+        END { if (mode != "") print mode }
+    '
+}
+
+list_outputs() {
+    local out
+    printf '%-10s %-10s %-10s %s\n' OUTPUT PREFERRED CURRENT MODES
+    printf '%s\n' "$1" | while IFS= read -r out; do
+        printf '%-10s %-10s %-10s %s\n' "$out" "$(preferred_mode "$out")" \
+            "$(current_mode "$out")" "$(modes_of "$out" | grep -c .)"
+    done
+    printf '\ncommon: %s\n' "$(common_modes "$1" | tr '\n' ' ')"
+}
+
+main() {
+    local source='' mode='' keep=0 list=0 undo=0
+    local out all targets best tmode
+
+    while getopts nvkm:s:lxh opt; do
+        case $opt in
+            n) dryrun=1       ;;
+            v) verbose=1      ;;
+            k) keep=1         ;;
+            m) mode=$OPTARG   ;;
+            s) source=$OPTARG ;;
+            l) list=1         ;;
+            x) undo=1         ;;
+            h) usage; exit 0  ;;
+            *) bad_usage      ;;
+        esac
+    done
+    shift $((OPTIND - 1))
+
+    case $mode in
+        '') ;;
+        *[!0-9x]* | *x*x* | x* | *x) warn "$mode: not a WxH mode"; bad_usage ;;
+        *x*) ;;
+        *) warn "$mode: not a WxH mode"; bad_usage ;;
+    esac
+    [ "$list" -eq 0 ] || [ "$undo" -eq 0 ] || bad_usage
+    [ $# -eq 0 ] || [ "$list$undo" = "00" ] || bad_usage
+
+    command -v "$XRANDR" >/dev/null 2>&1 || die "$XRANDR: not found"
+
+    probe=$(mktemp "${TMPDIR:-/tmp}/$progname.XXXXXX") \
+        || die "cannot create a temp file"
+    trap cleanup EXIT
+    trap 'exit 1' HUP INT TERM
+    "$XRANDR" --query > "$probe" || die "xrandr --query failed"
+
+    all=$(connected)
+    [ -n "$all" ] || die "no connected output"
+    log "connected: $(printf '%s\n' "$all" | tr '\n' ' ')"
+
+    # The source: named, else the primary, else the first connected output.
+    if [ -n "$source" ]; then
+        is_connected "$source" || die "$source: not a connected output"
+    else
+        source=$(primary)
+        [ -n "$source" ] || source=$(printf '%s\n' "$all" | head -n 1)
+    fi
+    log "source: $source"
+
+    # The targets: named, else every other connected output.
+    if [ $# -gt 0 ]; then
+        targets=''
+        for out do
+            is_connected "$out" || die "$out: not a connected output"
+            [ "$out" != "$source" ] || die "$out: is the source"
+            targets="$targets$out
+"
+        done
+    else
+        targets=$(printf '%s\n' "$all" | grep -v -x -e "$source" || true)
+    fi
+    targets=$(printf '%s\n' "$targets" | grep -v -e '^$' || true)
+
+    if [ "$list" -ne 0 ]; then
+        list_outputs "$all"
+        return 0
+    fi
+
+    if [ "$undo" -ne 0 ]; then
+        set -- --output "$source" --mode "$(preferred_mode "$source")" \
+               --scale 1x1 --pos 0x0 --primary
+        while IFS= read -r out; do
+            [ -n "$out" ] || continue
+            set -- "$@" --output "$out" --off
+        done <<TARGETS
+$targets
+TARGETS
+        run "$@"
+        return 0
+    fi
+
+    [ -n "$targets" ] \
+        || die "nothing to mirror to: $source is the only connected output"
+    log "targets: $(printf '%s\n' "$targets" | tr '\n' ' ')"
+
+    # A forced mode is taken as given; otherwise look for a shared one, and
+    # fall back to scaling when the outputs have nothing in common.
+    if [ -z "$mode" ] && [ "$keep" -eq 0 ]; then
+        best=$(common_modes "$source
+$targets" | largest_mode)
+        if [ -n "$best" ]; then
+            mode=$best
+        else
+            warn "no mode common to every output, scaling instead"
+            keep=1
+        fi
+    fi
+
+    if [ "$keep" -ne 0 ]; then
+        # The source keeps its mode; each target is driven at its own best
+        # mode with the source's area scaled onto it.
+        [ -n "$mode" ] || mode=$(current_mode "$source")
+        [ -n "$mode" ] || mode=$(preferred_mode "$source")
+        [ -n "$mode" ] || die "$source: no usable mode"
+        log "mode: $mode on $source, targets scaled from it"
+        set -- --output "$source" --mode "$mode" --pos 0x0 --scale 1x1 --primary
+        while IFS= read -r out; do
+            [ -n "$out" ] || continue
+            tmode=$(preferred_mode "$out")
+            [ -n "$tmode" ] || die "$out: no usable mode"
+            set -- "$@" --output "$out" --mode "$tmode" \
+                   --scale-from "$mode" --same-as "$source"
+        done <<TARGETS
+$targets
+TARGETS
+    else
+        log "mode: $mode on every output"
+        set -- --output "$source" --mode "$mode" --pos 0x0 --scale 1x1 --primary
+        while IFS= read -r out; do
+            [ -n "$out" ] || continue
+            modes_of "$out" | grep -q -x -e "$mode" \
+                || die "$out: does not support $mode"
+            set -- "$@" --output "$out" --mode "$mode" --scale 1x1 \
+                   --same-as "$source"
+        done <<TARGETS
+$targets
+TARGETS
+    fi
+
+    run "$@"
+}
+
+main "$@"

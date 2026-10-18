@@ -96,6 +96,17 @@ unlike `-F`, which would upload `/etc/passwd` for a message starting with
 library, which would bring back the interpreter the tools avoid.
 
 
+## screen-mirror: one probe, then one xrandr call
+
+Every question -- which outputs are connected, which is primary, what
+modes each lists -- is answered from a single `xrandr --query` kept in a
+temporary file, so all the answers describe the same instant; and the
+whole change is then one `xrandr` call, so the screens never pass
+through a half-applied layout. Why the largest common mode rather than
+`--auto`, and when it scales instead, is in the script's header, next to
+the code that does it.
+
+
 ## shrinkpdf: never worse than the input
 
 Ghostscript writes to a temporary file, and only then is the smaller of
