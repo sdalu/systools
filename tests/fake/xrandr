@@ -1,0 +1,12 @@
+#!/bin/sh
+# xrandr: answers --query with $XRANDR_OUTPUT, or fails with $XRANDR_EXIT;
+# any other call is logged to $XRANDR_LOG, one call per line.
+case " $* " in
+*" --query "*)
+    [ -z "${XRANDR_EXIT-}" ] || exit "$XRANDR_EXIT"
+    printf '%s\n' "${XRANDR_OUTPUT-}"
+    ;;
+*)
+    printf '%s\n' "$*" >> "${XRANDR_LOG:-/dev/null}"
+    ;;
+esac

@@ -1,0 +1,21 @@
+#!/bin/sh
+# sysctl: answers hw.acpi.acline with $SYSCTL_ACLINE and the
+# sys.class.drm subtree with $SYSCTL_DRM, and fails, as for an unknown
+# OID, on one that is unset.
+for oid; do :; done
+case $oid in
+hw.acpi.acline)
+    [ -n "${SYSCTL_ACLINE-}" ] || exit 1
+    printf '%s\n' "$SYSCTL_ACLINE"
+    ;;
+sys.class.drm)
+    [ -n "${SYSCTL_DRM-}" ] || exit 1
+    case " $* " in
+    *" -N "*) printf 'sys.class.drm\n' ;;
+    *) printf '%s\n' "$SYSCTL_DRM" ;;
+    esac
+    ;;
+*)
+    exit 1
+    ;;
+esac

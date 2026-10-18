@@ -22,7 +22,8 @@ export ORIG_PATH PATH
 
 # A missing stand-in would let a test reach the real tool, and the real
 # zfs destroys snapshots: refuse to run at all rather than risk it.
-for tool in zfs curl ip route ssh uname nice idprio chrt ionice gs; do
+for tool in zfs curl ip route ssh uname nice idprio chrt ionice gs \
+    sysctl ifconfig xrandr; do
     if [ "$(command -v "$tool")" != "$fakes/$tool" ]; then
         printf 'Bail out: %s does not resolve to tests/fake/%s\n' \
             "$tool" "$tool"

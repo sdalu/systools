@@ -1,0 +1,192 @@
+#!/bin/sh
+# is-docked — tell whether this laptop sits in its dock
+# usage: is-docked [-q] [-v]
+#
+# Docked means all three: on external power, a USB network interface
+# present (the dock's), and an external screen connected -- one that is
+# not an internal panel (eDP, LVDS, DSI).  Prints "docked=<criteria>" and
+# exits 0, or prints "undocked" and exits 1; 2 is a usage error.
+#
+#   FreeBSD: hw.acpi.acline; a ue(4) interface, which every USB ethernet
+#            driver attaches as; the connectors drm-kmod lists under the
+#            sys.class.drm sysctls, or xrandr(1) under X without them.
+#   Linux:   a Mains or USB supply online in /sys/class/power_supply (a
+#            USB-C dock powers the laptop over USB); a network interface
+#            whose device sits on USB, Wi-Fi excluded; the connectors of
+#            /sys/class/drm.  $SYSFS (default /sys) moves the sysfs root.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+: "${SYSFS:=/sys}"
+
+# sysctl(8) and ifconfig(8) live in /sbin, which a user's PATH may leave
+# out.
+PATH=$PATH:/sbin:/usr/sbin
+
+usage() {
+    printf 'usage: %s [-q] [-v]\n' "$prog"
+    printf '  -q  quiet: the exit status only\n'
+    printf '  -v  explain each criterion on stderr\n'
+}
+
+log() {
+    [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+# An internal panel, by its connector type or its output name.
+internal() {
+    case $1 in
+    eDP* | LVDS* | DSI*) return 0 ;;
+    *) return 1 ;;
+    esac
+}
+
+# --- FreeBSD ---------------------------------------------------------
+
+freebsd_power() {
+    [ "$(sysctl -q -n hw.acpi.acline 2> /dev/null)" = 1 ]
+}
+
+freebsd_usb_nic() {
+    local ifc
+    for ifc in $(ifconfig -l); do
+        case $ifc in
+        ue[0-9]*) printf '%s\n' "$ifc"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+# Print the connected connectors, one per line, named as Linux names
+# them (eDP-1, DP-2, HDMI-A-1): drm-kmod lists each one as a
+# sys.class.drm.card<N>-<connector>.status sysctl, the only OID there
+# whose value is "connected".
+drm_connected() {
+    sysctl sys.class.drm 2> /dev/null | awk -F': ' '
+        $2 == "connected" {
+            name = $1
+            sub(/^sys\.class\.drm\.card[0-9]+-/, "", name)
+            sub(/\.status$/, "", name)
+            print name
+        }'
+}
+
+freebsd_screen() {
+    local name names
+    if sysctl -q -N sys.class.drm > /dev/null 2>&1; then
+        names=$(drm_connected)
+    elif [ -n "${DISPLAY-}" ] && command -v xrandr > /dev/null 2>&1; then
+        log "no drm-kmod connectors, asking xrandr"
+        names=$(xrandr --query 2> /dev/null |
+            awk '$2 == "connected" { print $1 }')
+    else
+        printf '%s: cannot check screens: %s\n' "$prog" \
+            "no drm-kmod connectors, and no xrandr under X" >&2
+        return 1
+    fi
+    for name in $names; do
+        internal "$name" || { printf '%s\n' "$name"; return 0; }
+    done
+    return 1
+}
+
+# --- Linux -----------------------------------------------------------
+
+linux_power() {
+    local psu
+    for psu in "$SYSFS"/class/power_supply/*; do
+        [ -r "$psu/online" ] || continue
+        case $(cat "$psu/type" 2> /dev/null) in
+        Mains | USB) ;;
+        *) continue ;;
+        esac
+        if [ "$(cat "$psu/online")" = 1 ]; then
+            printf '%s\n' "${psu##*/}"
+            return 0
+        fi
+    done
+    return 1
+}
+
+linux_usb_nic() {
+    local net path
+    for net in "$SYSFS"/class/net/*; do
+        [ -e "$net/device" ] || continue
+        [ ! -d "$net/wireless" ] || continue
+        path=$(cd -P -- "$net/device" 2> /dev/null && pwd) || continue
+        case $path in
+        */usb[0-9]*/*) printf '%s\n' "${net##*/}"; return 0 ;;
+        esac
+    done
+    return 1
+}
+
+linux_screen() {
+    local conn name
+    for conn in "$SYSFS"/class/drm/card*-*; do
+        [ -r "$conn/status" ] || continue
+        [ "$(cat "$conn/status")" = connected ] || continue
+        name=${conn##*/}
+        name=${name#card*-}
+        internal "$name" || { printf '%s\n' "$name"; return 0; }
+    done
+    return 1
+}
+
+# ---------------------------------------------------------------------
+
+# criterion NAME — run this platform's test for NAME, printing what met it.
+criterion() {
+    case $os-$1 in
+    freebsd-power)   freebsd_power ;;
+    freebsd-usb_nic) freebsd_usb_nic ;;
+    freebsd-screen)  freebsd_screen ;;
+    linux-power)     linux_power ;;
+    linux-usb_nic)   linux_usb_nic ;;
+    linux-screen)    linux_screen ;;
+    esac
+}
+
+quiet=0
+verbose=0
+while getopts qvh opt; do
+    case $opt in
+    q) quiet=1 ;;
+    v) verbose=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -gt 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+case "$(uname -s)" in
+FreeBSD) os=freebsd ;;
+Linux)   os=linux ;;
+*)
+    printf '%s: unsupported platform: %s\n' "$prog" "$(uname -s)" >&2
+    exit 1
+    ;;
+esac
+
+met=
+for criterion in power usb_nic screen; do
+    if what=$(criterion "$criterion"); then
+        log "$criterion: yes${what:+ ($what)}"
+        met=$met$criterion,
+    else
+        log "$criterion: no"
+    fi
+done
+
+if [ "$met" = power,usb_nic,screen, ]; then
+    [ "$quiet" -eq 1 ] || printf 'docked=acline,if-usb,screen\n'
+    exit 0
+fi
+[ "$quiet" -eq 1 ] || printf 'undocked\n'
+exit 1

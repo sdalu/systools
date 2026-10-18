@@ -1,0 +1,4 @@
+#!/bin/sh
+# ifconfig: answers -l with $IFCONFIG_LIST.
+[ "${1-}" = -l ] || exit 1
+printf '%s\n' "${IFCONFIG_LIST-lo0}"

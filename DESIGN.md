@@ -109,6 +109,25 @@ Ghostscript has no `--`, so an input named `-x.pdf` is passed as
 `./-x.pdf`.
 
 
+## is-docked: three signals, read where each system keeps them
+
+A USB-C dock does not announce itself: nothing in the USB tree says
+"dock", only the hubs and the network adapter it carries. So docked is
+inferred from three things a dock provides at once -- external power, a
+USB network interface, an external screen -- and each is read where the
+system keeps it. FreeBSD has `hw.acpi.acline`, the `ue` interfaces every
+USB ethernet driver attaches as, and the connector status drm-kmod
+publishes as `sys.class.drm.card<N>-<connector>.status` sysctls, under
+the names Linux uses. `drm_info` reads the same driver, so it adds a
+dependency and nothing else -- and its outputs are a box-drawn tree, or
+JSON that wants `jq`. `xrandr` remains for an X server whose driver is
+not drm-kmod. Linux keeps all three in sysfs and needs no tool at all; a USB power supply counts there, because a USB-C dock
+powers the laptop over USB rather than through a Mains adapter.
+`acpi_dock(4)` was not used: it covers only ACPI docking stations
+(`_DCK`), not USB-C docks. Internal panels -- eDP, LVDS and DSI -- never
+count as the external screen.
+
+
 ## default-gateway: the route in use
 
 It asks the routing table the way each system answers best --

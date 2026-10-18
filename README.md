@@ -10,6 +10,7 @@ installed under a prefix; there is nothing to build.
 | Tool | What it does | Needs |
 |---|---|---|
 | `default-gateway` | print the gateway of the default route, IPv4 or IPv6, in a given FIB or table; a route with no gateway prints its interface | `route` (FreeBSD), `ip` (Linux) |
+| `is-docked` | tell whether a laptop sits in its dock: on external power, with a USB network interface, and with an external screen | `sysctl` and `ifconfig`, with drm-kmod for the screen (else `xrandr` under X) on FreeBSD; sysfs only on Linux |
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
@@ -23,7 +24,7 @@ each script says the rest -- configuration, defaults, platform
 differences. Options are short ones only (`-r`, not `--recursive`). Exit
 status is 0 on success, 1 on failure and 2 on a usage error, except for
 `low-priority` and `with-gnu-make`, which run a command and return its
-own.
+own, and `is-docked`, which answers with 0 (docked) or 1 (not).
 
 Where a tool calls `zfs`, `route`, `ip` or `idprio`, it adds the sbin
 directories they live in to the end of `PATH`, so it also works on Linux
@@ -54,10 +55,11 @@ make tests SH=dash              # the suite, with the scripts run under dash
 
 `make check` needs `shellcheck`. `make tests` runs every tool against
 stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
-`ssh`, `uname` and the priority tools, so it touches no pool, no network
-and no router, and it takes the FreeBSD and the Linux branch of each
-tool on either system. Each `tests/t-*.sh` names what it checks in its
-header and prints one line per check.
+`ssh`, `sysctl`, `ifconfig`, `xrandr`, `uname` and the priority tools,
+and a sysfs tree for Linux, so it touches no pool, no network and no
+router, and it takes the FreeBSD and the Linux branch of each tool on
+either system. Each `tests/t-*.sh` names what it checks in its header
+and prints one line per check.
 
 
 ## Known shortfalls
@@ -70,6 +72,9 @@ header and prints one line per check.
   `nice`. On Linux, `ionice -c 3` has an effect only with the BFQ or CFQ
   disk scheduler.
 - `default-gateway` reports the first nexthop of a multipath route only.
+- `is-docked` recognises the dock by what it provides, not by what it
+  is: any USB network interface counts, and a dock whose network
+  interface is PCIe over Thunderbolt does not.
 - `openwrt-acl` defaults to the router `maxwell` and the SSID
   `rezo_zero`; set `OPENWRT_ACL_HOST` and `OPENWRT_ACL_SSID`, or use `-H`
   and `-s`.
