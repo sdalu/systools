@@ -1,0 +1,4 @@
+#!/bin/sh
+# nice: runs the command, ignoring -n increment.
+[ "${1-}" != -n ] || shift 2
+exec "$@"

@@ -1,0 +1,101 @@
+#!/bin/sh
+# zfs: a pool held in $ZFS_STATE, one line per dataset ("tank/fs") or
+# snapshot ("tank/fs@name"), snapshots oldest first.  Calls that change
+# the pool are logged to $ZFS_LOG; a call whose arguments match the glob
+# $ZFS_FAIL fails.
+set -eu
+st=$ZFS_STATE
+
+for target; do :; done
+case " $* " in
+*" -r "*) recursive=1 ;;
+*) recursive=0 ;;
+esac
+
+# shellcheck disable=SC2254  # ZFS_FAIL is a pattern on purpose
+case "$*" in
+${ZFS_FAIL:-//never//})
+    printf 'zfs: injected failure: %s\n' "$*" >&2
+    exit 1
+    ;;
+esac
+
+has() {
+    grep -qxF -- "$1" "$st"
+}
+
+case $1 in
+list)
+    case " $* " in
+    *" -t snapshot "*)
+        case $target in
+        *@*) has "$target" ;;
+        *)
+            has "$target" ||
+                { printf "cannot open '%s'\n" "$target" >&2; exit 1; }
+            # newest first, as -S creation asks
+            awk -v ds="$target" -v r="$recursive" '
+                index($0, ds "@") == 1 ||
+                (r && index($0, ds "/") == 1 && index($0, "@")) {
+                    line[++n] = $0
+                }
+                END { while (n) print line[n--] }' "$st"
+            ;;
+        esac
+        ;;
+    *)
+        has "$target" ||
+            { printf "cannot open '%s'\n" "$target" >&2; exit 1; }
+        printf '%s\n' "$target"
+        ;;
+    esac
+    ;;
+snapshot)
+    printf '%s\n' "$*" >> "$ZFS_LOG"
+    if has "$target"; then
+        printf "cannot create snapshot '%s': dataset already exists\n" \
+            "$target" >&2
+        exit 1
+    fi
+    printf '%s\n' "$target" >> "$st"
+    ;;
+destroy)
+    case " $* " in
+    *" -n "*)
+        printf 'would destroy %s\n' "$target"
+        exit 0
+        ;;
+    esac
+    printf '%s\n' "$*" >> "$ZFS_LOG"
+    ds=${target%%@*}
+    snap=${target#*@}
+    case $snap in
+    %*)
+        # a range from the oldest snapshot of ds through ${snap#%}
+        has "$ds@${snap#%}" ||
+            { printf "could not find snapshot '%s'\n" "$target" >&2; exit 1; }
+        awk -v ds="$ds" -v upto="${snap#%}" '
+            !done && index($0, ds "@") == 1 {
+                if ($0 == ds "@" upto) done = 1
+                next
+            }
+            { print }' "$st" > "$st.new"
+        ;;
+    *)
+        has "$target" ||
+            { printf "could not find snapshot '%s'\n" "$target" >&2; exit 1; }
+        awk -v t="$target" -v r="$recursive" -v ds="$ds" -v s="$snap" '
+            $0 == t { next }
+            r && index($0, ds "/") == 1 && substr($0, index($0, "@")) == "@" s {
+                next
+            }
+            { print }' "$st" > "$st.new"
+        ;;
+    esac
+    mv -- "$st.new" "$st"
+    ;;
+*)
+    printf 'zfs (fake): unexpected call: %s\n' "$*" >&2
+    exit 2
+    ;;
+esac

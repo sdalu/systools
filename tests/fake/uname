@@ -1,0 +1,8 @@
+#!/bin/sh
+# uname: $FAKE_UNAME answers -s and $FAKE_NODENAME answers -n, so a test
+# can take the branch of either platform; anything else is the real one.
+case ${1-} in
+-s) [ -z "${FAKE_UNAME-}" ] || { printf '%s\n' "$FAKE_UNAME"; exit 0; } ;;
+-n) [ -z "${FAKE_NODENAME-}" ] || { printf '%s\n' "$FAKE_NODENAME"; exit 0; } ;;
+esac
+PATH=$ORIG_PATH exec uname "$@"

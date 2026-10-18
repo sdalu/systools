@@ -1,0 +1,6 @@
+#!/bin/sh
+# ip: logs its arguments to $IP_LOG and prints $IP_OUTPUT, or exits
+# with $IP_EXIT.
+printf '%s\n' "$*" >> "$IP_LOG"
+[ -z "${IP_EXIT-}" ] || exit "$IP_EXIT"
+[ -z "${IP_OUTPUT-}" ] || printf '%s\n' "$IP_OUTPUT"

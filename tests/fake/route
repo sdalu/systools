@@ -1,0 +1,6 @@
+#!/bin/sh
+# route: logs its arguments to $ROUTE_LOG and prints $ROUTE_OUTPUT, or exits
+# with $ROUTE_EXIT.
+printf '%s\n' "$*" >> "$ROUTE_LOG"
+[ -z "${ROUTE_EXIT-}" ] || exit "$ROUTE_EXIT"
+[ -z "${ROUTE_OUTPUT-}" ] || printf '%s\n' "$ROUTE_OUTPUT"

@@ -1,0 +1,6 @@
+#!/bin/sh
+# ionice: refused when $DENY_IONICE is set, else runs the command after its
+# 2 leading argument(s) (-c 3).
+[ -z "${DENY_IONICE-}" ] || exit 1
+shift 2
+exec "$@"

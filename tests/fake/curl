@@ -1,0 +1,12 @@
+#!/bin/sh
+# curl: records its arguments in $CURL_ARGV, one per line, and its stdin
+# in $CURL_STDIN, then answers $CURL_BODY with status $CURL_CODE (200), or
+# fails as curl does with $CURL_EXIT.
+printf '%s\n' "$@" > "$CURL_ARGV"
+cat > "$CURL_STDIN"
+if [ -n "${CURL_EXIT-}" ]; then
+    printf 'curl: (7) Failed to connect\n' >&2
+    exit "$CURL_EXIT"
+fi
+body=${CURL_BODY-'{"status":1,"request":"req-1"}'}
+printf '%s\n%s' "$body" "${CURL_CODE:-200}"

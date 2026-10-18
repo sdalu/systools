@@ -1,0 +1,6 @@
+#!/bin/sh
+# ssh: records its arguments in $SSH_ARGV, one per line, swallows the
+# remote script on stdin and prints the records in $SSH_OUTPUT (a file).
+printf '%s\n' "$@" > "$SSH_ARGV"
+cat > /dev/null
+[ -z "${SSH_OUTPUT-}" ] || cat -- "$SSH_OUTPUT"
