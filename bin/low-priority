@@ -1,12 +1,94 @@
-#!/usr/bin/env ruby
+#!/bin/sh
+# low-priority — run a command at the lowest CPU priority available
+# usage: low-priority [-v] command [arg...]
+#   -v  report skipped tools and the command run, on stderr
+#
+# FreeBSD: nice 20 and the idle scheduling class (idprio 30), so the
+#   command only gets the CPU when nothing else wants it.  Unprivileged
+#   users need security.bsd.unprivileged_idprio=1; without it, plain
+#   nice is used.
+# Linux: nice 19, the SCHED_IDLE policy (chrt -i 0) and the idle I/O
+#   class (ionice -c 3), each tool used only if present and permitted.
+#   ionice is a no-op unless the disk uses the BFQ (or CFQ) scheduler.
+# Elsewhere: plain nice.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
 
-case RUBY_PLATFORM
-when /-freebsd\d+$/i
-    exec '/usr/bin/nice', '-n', '20',
-         '/usr/sbin/idprio', '30', *ARGV
-    warn "failed to execute command"
-else
-    warn "unsupported platform: #{RUBY_PLATFORM}"
-end
+prog=${0##*/}
+verbose=0
 
-exit 1
+usage() {
+    printf 'usage: %s [-v] command [arg...]\n' "$prog" >&2
+    exit 2
+}
+
+# getopts stops at the first non-option, so the command's own flags
+# are left alone: low-priority -v make -j4
+while getopts v opt; do
+    case $opt in
+    v) verbose=1 ;;
+    *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ "$#" -gt 0 ] || usage
+
+info() {
+    [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+# Try a wrapper on a no-op first, so a refused or missing tool degrades
+# to the next best thing instead of failing the real command.
+permitted() {
+    "$@" true > /dev/null 2>&1 && return
+    info "skipping $1: not available or not permitted"
+    return 1
+}
+
+# Print a word so it can be pasted back into a shell: single-quoted,
+# with embedded quotes as '\'', unless it is made of safe characters.
+quote() {
+    case $1 in
+    '' | *[!A-Za-z0-9_./=:,+@%-]*)
+        printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+        ;;
+    *)
+        printf '%s' "$1"
+        ;;
+    esac
+}
+
+run() {
+    local word
+    if [ "$verbose" -eq 1 ]; then
+        printf '%s: running:' "$prog" >&2
+        for word in "$@"; do
+            printf ' %s' "$(quote "$word")" >&2
+        done
+        printf '\n' >&2
+    fi
+    exec "$@"
+}
+
+# The scheduling tools differ per kernel; there is no portable flag.
+case "$(uname -s)" in
+FreeBSD)
+    if permitted /usr/sbin/idprio 30; then
+        set -- /usr/sbin/idprio 30 "$@"
+    fi
+    run /usr/bin/nice -n 20 "$@"
+    ;;
+Linux)
+    if permitted ionice -c 3; then
+        set -- ionice -c 3 "$@"
+    fi
+    if permitted chrt -i 0; then
+        set -- chrt -i 0 "$@"
+    fi
+    run nice -n 19 "$@"
+    ;;
+*)
+    run nice -n 19 "$@"
+    ;;
+esac
