@@ -1,0 +1,10 @@
+#!/bin/sh
+# iw: "dev IF link" prints the file $IW_DIR/IF, or "Not connected." when
+# there is none; calls are logged to $IW_LOG.
+printf '%s\n' "$*" >> "${IW_LOG:-/dev/null}"
+[ "${1-}" = dev ] && [ "${3-}" = link ] || exit 1
+if [ -r "${IW_DIR-}/$2" ]; then
+    cat -- "$IW_DIR/$2"
+else
+    printf 'Not connected.\n'
+fi

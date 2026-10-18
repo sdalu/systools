@@ -1,0 +1,9 @@
+#!/bin/sh
+# rofi: as rofi -dmenu, saves the entries it is offered on stdin to
+# $ROFI_ENTRIES and prints the one equal to $ROFI_PICK, or fails as when
+# dismissed with Escape when $ROFI_PICK is empty; calls are logged to
+# $ROFI_LOG.
+printf '%s\n' "$*" >> "${ROFI_LOG:-/dev/null}"
+cat > "${ROFI_ENTRIES:-/dev/null}"
+[ -n "${ROFI_PICK-}" ] || exit 1
+printf '%s\n' "$ROFI_PICK"

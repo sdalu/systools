@@ -1,0 +1,15 @@
+wlan0: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: Latop WiFi
+	options=0
+	ether 02:00:00:00:00:01
+	hwaddr 02:00:00:00:00:02
+	groups: wlan
+	ssid rezo_zero channel 1 (2412 MHz 11g) bssid 02:00:00:00:00:03
+	regdomain FCC country US authmode WPA2/802.11i privacy ON
+	deftxkey UNDEF AES-CCM 2:128-bit AES-CCM 3:128-bit
+	AES-CCM ucast:128-bit txpower 30 bmiss 7 scanvalid 60 protmode CTS wme
+	roaming MANUAL
+	parent interface: iwlwifi0
+	media: IEEE 802.11 Wireless Ethernet OFDM/24Mbps mode 11g
+	status: associated
+	nd6 options=29<PERFORMNUD,IFDISABLED,AUTO_LINKLOCAL>

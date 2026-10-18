@@ -178,6 +178,45 @@ Internal panels -- eDP, LVDS and DSI -- never count as the external
 screen.
 
 
+## do-screenshot: the mode is an argument, the menu a fallback
+
+The `~/bin` script it replaces always went through a rofi menu wrapper
+of the user's own (`~/.config/rofi/rofi-menu.sh`) and refused to start
+without it. The mode is now an argument, so a key binding can name it
+outright, and the menu is plain `rofi -dmenu`, asked only when no mode
+is given. Only `maim` is required: the clipboard and the notification
+are what follow a screenshot, not the screenshot itself, so without
+`xclip` or `notify-send` it says what it skipped and still succeeds. A
+capture that fails -- an area selection cancelled -- removes the file
+maim may have left, so a failure never leaves an empty PNG behind.
+
+
+## vorbisedit: write back only an edit that was made
+
+The comments are written back only when the editor exits 0 and the file
+differs from what was listed: `vorbiscomment -w` rewrites the whole Ogg
+file, so an edit abandoned or a file opened and closed costs nothing.
+Should that write fail, the temporary file holding the edit is kept and
+named, rather than removed with the edit in it.
+
+
+## where-am-i: places from the configuration, hooks kept for rules
+
+The `~/bin` script it replaces named its places in a `case` and read
+`wlan0` and `net0` by name. The places are now configuration, one
+`place ssid` line each, because they are the user's facts and not the
+tool's; the SSID is the rest of the line, as an SSID may hold spaces.
+The wireless interfaces are found rather than named -- the wlan group
+on FreeBSD, `/sys/class/net/*/wireless` on Linux -- and the first one
+associated decides. `wired_facts` (the default route's interface, its
+address, a lagg or bond's active port) and `external_view` (Mullvad's
+view of the exit address) are kept although no rule reads them yet:
+they are where a rule on the wired network or the exit point starts,
+by the user's decision, and are not dead code to prune. `-v` reports
+the wired facts so they are exercised; the outside view is not fetched
+until a rule needs it, since it is a request to a third party.
+
+
 ## default-gateway: the route in use
 
 It asks the routing table the way each system answers best --

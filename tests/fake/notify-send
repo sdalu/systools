@@ -1,0 +1,10 @@
+#!/bin/sh
+# notify-send: logs each call to $NOTIFY_LOG, its arguments one per line
+# and the call ended by "--"; with -p it prints the id 77.
+{
+    printf '%s\n' "$@"
+    printf -- '--\n'
+} >> "${NOTIFY_LOG:-/dev/null}"
+for arg; do
+    [ "$arg" != -p ] || printf '77\n'
+done

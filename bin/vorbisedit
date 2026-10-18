@@ -1,0 +1,69 @@
+#!/bin/sh
+# vorbisedit — edit the comments (tags) of an Ogg Vorbis file in an editor
+# usage: vorbisedit file.ogg
+#
+# The comments are listed one NAME=value per line into a temporary file
+# opened in $VISUAL, else $EDITOR, else vi, and written back, replacing
+# them all, once the editor exits 0 having changed it.  An editor that
+# fails, or a file left as it was, writes nothing.  Should the write
+# fail, the edited comments are kept and their file named, so the edit
+# is not lost.  Comments are read and written as UTF-8 (vorbiscomment
+# -R), with \n escapes (-e) so a comment spanning lines stays on one.
+# Exit status: 0 success or nothing changed, 1 failure, 2 usage error.
+set -eu
+
+prog=${0##*/}
+
+# vorbiscomment lives in /usr/local/bin on FreeBSD.
+PATH=$PATH:/usr/local/bin
+
+usage() {
+    printf 'usage: %s file.ogg\n' "$prog"
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+while getopts h opt; do
+    case $opt in
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+file=$1
+
+[ -f "$file" ] || die "$file: no such file"
+[ -r "$file" ] && [ -w "$file" ] || die "$file: cannot be both read and written"
+command -v vorbiscomment > /dev/null 2>&1 ||
+    die "vorbiscomment is not installed"
+
+tmp=$(mktemp "${TMPDIR:-/tmp}/vorbisedit.XXXXXX") ||
+    die "cannot make a temporary file"
+keep=
+trap '[ -n "$keep" ] || rm -f -- "$tmp" "$tmp.orig"' EXIT
+trap 'exit 1' HUP INT TERM
+
+vorbiscomment -l -R -e -- "$file" > "$tmp" ||
+    die "$file: cannot read its comments"
+cp -- "$tmp" "$tmp.orig"
+
+# The editor is a command line, as $EDITOR is everywhere: "emacs -nw".
+# shellcheck disable=SC2086
+${VISUAL:-${EDITOR:-vi}} "$tmp" || die "the editor failed: $file left as it was"
+
+if cmp -s -- "$tmp" "$tmp.orig"; then
+    printf '%s: no change\n' "$prog" >&2
+    exit 0
+fi
+if ! vorbiscomment -w -R -e -c "$tmp" -- "$file"; then
+    keep=y
+    rm -f -- "$tmp.orig"
+    die "$file: cannot write its comments; the edited ones are in $tmp"
+fi

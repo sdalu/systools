@@ -1,0 +1,8 @@
+#!/bin/sh
+# wpa_cli: "-i IF status" prints the file $WPA_DIR/IF, or fails as with
+# no wpa_supplicant listening on IF; calls are logged to $WPA_LOG.
+printf '%s\n' "$*" >> "${WPA_LOG:-/dev/null}"
+[ "${1-}" = -i ] && [ "${3-}" = status ] || exit 1
+[ -r "${WPA_DIR-}/$2" ] ||
+    { printf "Failed to connect to non-global ctrl_ifname: %s\n" "$2" >&2; exit 1; }
+cat -- "$WPA_DIR/$2"

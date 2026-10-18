@@ -1,0 +1,7 @@
+#!/bin/sh
+# xdotool: getactivewindow prints $XDOTOOL_WINDOW (default 4711), or
+# fails when it is "fail"; calls are logged to $XDOTOOL_LOG.
+printf '%s\n' "$*" >> "${XDOTOOL_LOG:-/dev/null}"
+[ "$1" = getactivewindow ] || exit 1
+[ "${XDOTOOL_WINDOW-}" != fail ] || exit 1
+printf '%s\n' "${XDOTOOL_WINDOW:-4711}"

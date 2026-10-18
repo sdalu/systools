@@ -1,0 +1,10 @@
+#!/bin/sh
+# edit-tags: an editor for the vorbisedit tests, never called by a tool
+# itself.  Logs its arguments to $EDIT_LOG, applies the sed script
+# $EDIT_SED to the file it is given in place, then exits with $EDIT_RC.
+printf '%s\n' "$*" >> "${EDIT_LOG:-/dev/null}"
+for file; do :; done
+if [ -n "${EDIT_SED-}" ]; then
+    sed -e "$EDIT_SED" "$file" > "$file.new" && mv -- "$file.new" "$file"
+fi
+exit "${EDIT_RC:-0}"

@@ -1,0 +1,17 @@
+net0: flags=1008843<UP,BROADCAST,RUNNING,SIMPLEX,MULTICAST,LOWER_UP> metric 0 mtu 1500
+	description: Failover laptop RJ45/WiFi
+	options=0
+	ether 02:00:00:00:00:01
+	hwaddr 00:00:00:00:00:00
+	inet 192.168.1.10 netmask 0xffffff00 broadcast 192.168.1.255
+	inet6 fe80::ff:fe00:1%net0 prefixlen 64 scopeid 0x5
+	inet6 fd00:0:0:1:ff:fe00:1 prefixlen 64 autoconf pltime 604800 vltime 2592000
+	inet6 fd00:0:0:1:3492:466a:8a12:b934 prefixlen 64 deprecated autoconf temporary pltime 0 vltime 78100
+	inet6 fd00:0:0:1:7200:414c:8912:620f prefixlen 64 autoconf temporary pltime 75836 vltime 162236
+	laggproto failover lagghash l2,l3,l4
+	laggport: em0 flags=1<MASTER>
+	laggport: wlan0 flags=4<ACTIVE>
+	groups: lagg
+	media: Ethernet autoselect
+	status: active
+	nd6 options=23<PERFORMNUD,ACCEPT_RTADV,AUTO_LINKLOCAL>

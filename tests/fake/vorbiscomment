@@ -1,0 +1,28 @@
+#!/bin/sh
+# vorbiscomment: the "Ogg file" is the text of its comments.  -l prints
+# it; -w -c FILE replaces it with FILE, unless $VORBISCOMMENT_FAIL is set.
+# Calls are logged to $VORBISCOMMENT_LOG.
+printf '%s\n' "$*" >> "${VORBISCOMMENT_LOG:-/dev/null}"
+mode='' comments=''
+while [ "$#" -gt 0 ]; do
+    case $1 in
+    -l) mode='list' ;;
+    -w) mode='write' ;;
+    -c) shift; comments=$1 ;;
+    -R | -e) ;;
+    --) shift; break ;;
+    *) break ;;
+    esac
+    shift
+done
+case $mode in
+list) cat -- "$1" ;;
+write)
+    if [ -n "${VORBISCOMMENT_FAIL-}" ]; then
+        printf 'vorbiscomment: Failed writing comments\n' >&2
+        exit 1
+    fi
+    cp -- "$comments" "$1"
+    ;;
+*) exit 1 ;;
+esac

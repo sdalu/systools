@@ -1,0 +1,183 @@
+#!/bin/sh
+# do-screenshot — take a screenshot of the X11 desktop, an area or the
+# active window, save it as PNG and copy it to the clipboard
+# usage: do-screenshot [-d dir] [desktop|area|window|delay [seconds]]
+#
+#   desktop  the whole X screen, every output
+#   area     a rectangle or a window picked with the mouse
+#   window   the window that has the focus
+#   delay    the window that has the focus N seconds from now (default
+#            5), time to switch to it; counted down in notifications
+# Without a mode, one is picked from a rofi menu, so a key binding or a
+# bar button can run it bare (i3: bindsym --release Print exec
+# --no-startup-id do-screenshot); a menu dismissed is not an error.
+#
+# The file is <dir>/Screenshot_YYYY-MM-DD-HH-MM-SS.png, dir being -d,
+# else $XDG_PICTURES_DIR, else ~/Pictures; a name already taken gets a
+# -2, -3... suffix.  Its path is printed on stdout.  It is copied to the
+# clipboard with xclip and announced with notify-send, each skipped with
+# a word on stderr when missing.
+# Exit status: 0 success or menu dismissed, 1 failure (an area selection
+# cancelled included), 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+readonly app=screenshot default_delay=5
+
+# maim, xdotool, xclip, notify-send and rofi live in /usr/local/bin on
+# FreeBSD, which is not on every window manager's PATH.
+PATH=$PATH:/usr/local/bin
+
+usage() {
+    printf 'usage: %s [-d dir] [desktop|area|window|delay [seconds]]\n' "$prog"
+    printf '  -d dir  save into dir\n'
+    # shellcheck disable=SC2016  # the variable's name, not its value
+    printf '          (default: $XDG_PICTURES_DIR, else ~/Pictures)\n'
+    printf '  without a mode, pick one from a rofi menu\n'
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+have() {
+    command -v "$1" > /dev/null 2>&1
+}
+
+# menu — print the mode picked from rofi, nothing when dismissed
+menu() {
+    local chosen
+    have rofi || die "no mode given and no rofi to ask for one"
+    chosen=$(printf '%s\n' 'Desktop' 'Area' 'Window' 'Window, delayed' |
+        rofi -dmenu -i -p Screenshot 2> /dev/null) || chosen=
+    case $chosen in
+    Desktop) printf 'desktop\n' ;;
+    Area) printf 'area\n' ;;
+    Window) printf 'window\n' ;;
+    'Window, delayed') printf 'delay\n' ;;
+    esac
+}
+
+# notify ARG... — notify-send, its notification id (with -p) on stdout;
+# silent and successful without it
+notify() {
+    have notify-send || return 0
+    notify-send -a "$app" "$@" 2> /dev/null || :
+}
+
+# countdown SECONDS — wait, counting down in a notification replaced
+# each second; sets nid to that notification's id, if it gave one
+countdown() {
+    local seconds="$1" i="$1" id
+    nid=
+    if ! have notify-send; then
+        sleep "$seconds"
+        return 0
+    fi
+    while [ "$i" -gt 0 ]; do
+        id=$(notify -p ${nid:+-r "$nid"} -t 1100 \
+            -h "int:value:$(((seconds - i) * 100 / seconds))" Screenshot \
+            "Capturing the active window in ${i}s; switch to it now.")
+        nid=${id:-$nid}
+        sleep 1
+        i=$((i - 1))
+    done
+    notify ${nid:+-r "$nid"} -t 800 -h int:value:100 Screenshot \
+        'Capturing now' > /dev/null
+    sleep 0.5
+}
+
+active_window() {
+    have xdotool || die "xdotool is needed to find the active window"
+    xdotool getactivewindow 2> /dev/null ||
+        die "xdotool cannot tell the active window"
+}
+
+# markup TEXT — TEXT with &, < and > escaped for a notification body
+markup() {
+    printf '%s' "$1" | sed 's/&/\&amp;/g; s/</\&lt;/g; s/>/\&gt;/g'
+}
+
+dir=${XDG_PICTURES_DIR:-$HOME/Pictures}
+while getopts d:h opt; do
+    case $opt in
+    d) dir=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+delay=
+case $# in
+0) mode= ;;
+1) mode=$1 ;;
+2)
+    mode=$1 delay=$2
+    case $mode:$delay in
+    delay:*[!0-9]* | delay: | delay:0) usage >&2; exit 2 ;;
+    delay:*) ;;
+    *) usage >&2; exit 2 ;;
+    esac
+    ;;
+*) usage >&2; exit 2 ;;
+esac
+case $mode in
+'' | desktop | area | window | delay) ;;
+*) usage >&2; exit 2 ;;
+esac
+
+if [ -z "$mode" ]; then
+    mode=$(menu)
+    [ -n "$mode" ] || exit 0
+fi
+
+have maim || die "maim is not installed"
+mkdir -p -- "$dir" || die "cannot create $dir"
+base=$dir/Screenshot_$(date +%Y-%m-%d-%H-%M-%S)
+file=$base.png
+n=1
+while [ -e "$file" ]; do
+    n=$((n + 1))
+    file=$base-$n.png
+done
+
+nid=
+case $mode in
+desktop) set -- ;;
+area) set -- -s ;;
+window)
+    win=$(active_window)
+    set -- -i "$win"
+    ;;
+delay)
+    countdown "${delay:-$default_delay}"
+    win=$(active_window)
+    set -- -i "$win"
+    ;;
+esac
+if ! maim -u -f png "$@" "$file"; then
+    rm -f -- "$file"
+    die "maim took no screenshot"
+fi
+
+if ! have xclip; then
+    printf '%s: no xclip, so not copied to the clipboard\n' "$prog" >&2
+    copied='Saved'
+elif xclip -selection clipboard -t image/png -i "$file" 2> /dev/null; then
+    copied='Copied to the clipboard and saved'
+else
+    printf '%s: xclip could not copy it to the clipboard\n' "$prog" >&2
+    copied='Saved'
+fi
+if have notify-send; then
+    link="<a href=\"file://$(markup "$file")\">$(markup "${file##*/}")</a>"
+    notify ${nid:+-r "$nid"} -h "string:image-path:$file" Screenshot \
+        "$copied as $link" > /dev/null
+else
+    printf '%s: no notify-send, so not announced\n' "$prog" >&2
+fi
+printf '%s\n' "$file"

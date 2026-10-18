@@ -1,0 +1,12 @@
+#!/bin/sh
+# maim: logs its arguments to $MAIM_LOG and writes a PNG stand-in to the
+# file it is given last; $MAIM_FAIL makes it fail, as a selection
+# cancelled with Escape does, leaving that file empty.
+printf '%s\n' "$*" >> "${MAIM_LOG:-/dev/null}"
+for file; do :; done
+if [ -n "${MAIM_FAIL-}" ]; then
+    : > "$file"
+    printf 'maim: Selection was cancelled by keystroke or right-click.\n' >&2
+    exit 1
+fi
+printf 'PNG\n' > "$file"

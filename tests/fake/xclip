@@ -1,0 +1,5 @@
+#!/bin/sh
+# xclip: logs its arguments to $XCLIP_LOG; $XCLIP_FAIL makes it fail, as
+# without an X server.
+printf '%s\n' "$*" >> "${XCLIP_LOG:-/dev/null}"
+[ -z "${XCLIP_FAIL-}" ] || exit 1

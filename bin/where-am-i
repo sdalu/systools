@@ -1,0 +1,207 @@
+#!/bin/sh
+# where-am-i — tell where this machine is, from the Wi-Fi it is on
+# usage: where-am-i [-q] [-v] [-c file] [-i interface]
+#
+# Prints a place name -- home, work, whatever the configuration calls
+# it -- or "unknown", found from the SSID of the first associated
+# wireless interface: on FreeBSD the members of the wlan group, as
+# ifconfig(8) reports them; on Linux the interfaces with a wireless
+# directory in /sys/class/net, asked with iw(8), else wpa_cli(8).  -i
+# names the interface instead.  $SYSFS (default /sys) moves the sysfs
+# root.  An SSID is trusted only while associated: a known network out
+# of range is not a place.
+#
+# The configuration, -c, else $WHERE_AM_I_CONFIG, else
+# ${XDG_CONFIG_HOME:-~/.config}/where-am-i, has one line per network:
+#     home  rezo_zero
+#     work  eduroam
+# the place first, then the SSID, the rest of the line, spaces and all;
+# # starts a comment line.  Without one, every place is unknown.
+#
+# Facts for rules to come -- the wired side, and the outside view -- are
+# gathered by wired_facts and external_view below; -v reports the first.
+# Exit status: 0 the place is known, 1 unknown, 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+: "${XDG_CONFIG_HOME:=$HOME/.config}"
+: "${SYSFS:=/sys}"
+
+# ifconfig and route are in /sbin, iw and ip in /sbin or /usr/sbin,
+# which Linux cron's PATH and an unprivileged Linux user's leave out;
+# curl and jq are in /usr/local/bin on FreeBSD.
+PATH=$PATH:/sbin:/usr/sbin:/usr/local/bin
+
+usage() {
+    printf 'usage: %s [-q] [-v] [-c file] [-i interface]\n' "$prog"
+    printf '  -q            quiet: the exit status only\n'
+    printf '  -v            say on stderr what the answer rests on\n'
+    printf '  -c file       the SSID-to-place configuration\n'
+    printf '  -i interface  the wireless interface to ask\n'
+}
+
+log() {
+    [ -z "$verbose" ] || printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+# wireless_interfaces — the candidates, one per line
+wireless_interfaces() {
+    local dir
+    if [ -n "$iface" ]; then
+        printf '%s\n' "$iface"
+        return
+    fi
+    case $os in
+    FreeBSD) ifconfig -g wlan 2> /dev/null || : ;;
+    Linux)
+        for dir in "$SYSFS"/class/net/*/wireless; do
+            [ -d "$dir" ] || continue
+            dir=${dir%/wireless}
+            printf '%s\n' "${dir##*/}"
+        done
+        ;;
+    esac
+}
+
+# associated_ssid IF — print the SSID IF is associated with; fail when it
+# is not associated, or cannot be asked
+associated_ssid() {
+    local dev="$1" config ssid
+    case $os in
+    FreeBSD)
+        config=$(ifconfig "$dev" 2> /dev/null) || return 1
+        printf '%s\n' "$config" | grep -q '^[[:space:]]*status: associated$' ||
+            return 1
+        ssid=$(printf '%s\n' "$config" |
+            sed -n 's/^[[:space:]]*ssid \(.*\) channel .*/\1/p')
+        ;;
+    Linux)
+        if command -v iw > /dev/null 2>&1; then
+            # "Not connected." has no SSID line.
+            config=$(iw dev "$dev" link 2> /dev/null) || return 1
+            ssid=$(printf '%s\n' "$config" |
+                sed -n 's/^[[:space:]]*SSID: //p')
+        elif command -v wpa_cli > /dev/null 2>&1; then
+            config=$(wpa_cli -i "$dev" status 2> /dev/null) || return 1
+            printf '%s\n' "$config" | grep -qx 'wpa_state=COMPLETED' ||
+                return 1
+            ssid=$(printf '%s\n' "$config" | sed -n 's/^ssid=//p')
+        else
+            log "neither iw nor wpa_cli to ask $dev"
+            return 1
+        fi
+        ;;
+    esac
+    [ -n "$ssid" ] || return 1
+    printf '%s\n' "$ssid"
+}
+
+# place_for SSID — the place the configuration gives SSID, else unknown
+place_for() {
+    local place=
+    if [ -r "$config_file" ]; then
+        place=$(WHERE_SSID=$1 awk '
+            /^[[:space:]]*(#|$)/ { next }
+            {
+                place = $1
+                ssid = $0
+                sub(/^[[:space:]]*[^[:space:]]+[[:space:]]+/, "", ssid)
+                sub(/[[:space:]]+$/, "", ssid)
+                if (ssid == ENVIRON["WHERE_SSID"]) { print place; exit }
+            }' "$config_file")
+    fi
+    printf '%s\n' "${place:-unknown}"
+}
+
+# wired_facts — the interface the default route leaves by, its IPv4
+# address and, for a lagg (FreeBSD) or a bond (Linux), its active port:
+# for a rule on the home subnet or the port in use.  Sets wire_if,
+# wire_ip and wire_port, each empty when unknown.
+wired_facts() {
+    local out
+    wire_if='' wire_ip='' wire_port=''
+    case $os in
+    FreeBSD)
+        out=$(route -n get default 2> /dev/null) || out=
+        wire_if=$(printf '%s\n' "$out" | sed -n 's/^[[:space:]]*interface: //p')
+        [ -n "$wire_if" ] || return 0
+        out=$(ifconfig "$wire_if" 2> /dev/null) || out=
+        wire_ip=$(printf '%s\n' "$out" |
+            sed -n 's/^[[:space:]]*inet \([0-9.]*\) .*/\1/p' | head -n 1)
+        wire_port=$(printf '%s\n' "$out" |
+            awk '$1 == "laggport:" && /ACTIVE/ { print $2; exit }')
+        ;;
+    Linux)
+        out=$(ip -4 route get 192.0.2.1 2> /dev/null) || out=
+        wire_if=$(printf '%s\n' "$out" |
+            sed -n 's/.* dev \([^[:space:]]*\).*/\1/p' | head -n 1)
+        wire_ip=$(printf '%s\n' "$out" |
+            sed -n 's/.* src \([0-9.]*\).*/\1/p' | head -n 1)
+        [ -n "$wire_if" ] || return 0
+        if [ -r "$SYSFS/class/net/$wire_if/bonding/active_slave" ]; then
+            wire_port=$(cat -- "$SYSFS/class/net/$wire_if/bonding/active_slave")
+        fi
+        ;;
+    esac
+}
+
+# external_view — how the outside sees this machine, from Mullvad's
+# am.i.mullvad.net: for a rule on the exit country or provider, or on
+# whether traffic leaves through Mullvad.  Sets ext_ip, ext_country,
+# ext_organization and ext_mullvad (true or false); fails without the
+# network.  Not called yet: it costs a request to a third party, which
+# no rule has needed.
+# shellcheck disable=SC2034  # the ext_ variables are for rules to come
+external_view() {
+    local info
+    info=$(curl -fsS --max-time 5 https://am.i.mullvad.net/json) || return 1
+    ext_ip=$(printf '%s\n' "$info" | jq -r .ip)
+    ext_country=$(printf '%s\n' "$info" | jq -r .country)
+    ext_organization=$(printf '%s\n' "$info" | jq -r .organization)
+    ext_mullvad=$(printf '%s\n' "$info" | jq -r .mullvad_exit_ip)
+}
+
+quiet='' verbose='' iface=''
+config_file=${WHERE_AM_I_CONFIG:-$XDG_CONFIG_HOME/where-am-i}
+while getopts qvc:i:h opt; do
+    case $opt in
+    q) quiet=y ;;
+    v) verbose=y ;;
+    c) config_file=$OPTARG ;;
+    i) iface=$OPTARG ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+os=$(uname -s)
+case $os in
+FreeBSD | Linux) ;;
+*) printf '%s: unsupported platform: %s\n' "$prog" "$os" >&2 ;;
+esac
+[ -r "$config_file" ] || log "no configuration in $config_file"
+
+where=unknown
+for dev in $(wireless_interfaces); do
+    if ssid=$(associated_ssid "$dev"); then
+        where=$(place_for "$ssid")
+        log "wifi: $dev associated with ssid $ssid: $where"
+        break
+    fi
+    log "wifi: $dev not associated"
+done
+if [ -n "$verbose" ]; then
+    wired_facts
+    log "wire: if=${wire_if:-none} ip=${wire_ip:-none} port=${wire_port:-none}"
+fi
+log "location: $where"
+
+[ -n "$quiet" ] || printf '%s\n' "$where"
+[ "$where" != unknown ]
