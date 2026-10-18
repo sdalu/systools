@@ -1,0 +1,546 @@
+#!/bin/sh
+# mullvad-relays — download, select and describe Mullvad VPN relays
+# usage: mullvad-relays [-raod] [-t type] [-c country] [-C city]
+#                       [-p provider] [-s gbps] [-L | -i | -f fields | -w]
+#                       [-R] [host...]
+#
+# The relay list is Mullvad's public one, https://api.mullvad.net/www/
+# relays/all/, kept in $MULLVAD_RELAYS_CACHE (default
+# ${XDG_CACHE_HOME:-~/.cache}/mullvad-relays.json) and downloaded again
+# once it is a day old, or at once with -r.  A download that fails, or
+# that is not a relay list, leaves the cached list in place, and the
+# tool goes on with it after saying so.
+#
+# Relays are selected by every option given, and by the hosts named: a
+# host is a hostname or the start of one, so se-got picks every relay in
+# Gothenburg.  -t, -c, -C and -p take a comma-separated list, matched
+# without regard to case; a country or a city is its code or its name.
+# Only active relays are listed, unless -a.
+#
+# The default output is a table, one relay per line, whose FLAGS are
+# owned (by Mullvad, not rented), daita, inactive and notice (Mullvad
+# has posted a status message; -i shows it).  -i prints every field of
+# each relay, -f prints the fields named, tab-separated with no header,
+# for scripts (the field names are those -i shows), and -L lists the
+# countries and cities, with how many relays each has.  -R keeps one
+# relay, drawn at random from those selected.
+#
+# -w prints the [Peer] section of a WireGuard configuration for the
+# relay selected -- its key, and its IPv4 address on port 51820 as the
+# endpoint, every address routed through it -- to go with an
+# [Interface] section of the user's own: the private key, and the
+# address Mullvad assigned when its public key was registered.  It
+# considers WireGuard relays alone, and needs the selection to be one
+# relay: a hostname, or -R.
+#
+# JSON is read by a small awk parser: \uXXXX escapes are kept as they
+# are, which the list has no use for, since it carries UTF-8.
+# Exit status: 0 a relay matched, 1 none did or failure, 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+readonly api=https://api.mullvad.net/www/relays/all/
+prog=${0##*/}
+: "${MULLVAD_RELAYS_CACHE:=${XDG_CACHE_HOME:-$HOME/.cache}/mullvad-relays.json}"
+
+usage() {
+    cat <<EOF
+usage: $prog [-raod] [-t type] [-c country] [-C city] [-p provider]
+         [-s gbps] [-L | -i | -f fields | -w] [-R] [host...]
+  -r           download the relay list now, not once a day
+  -a           include relays that are not active
+  -o           only relays Mullvad owns
+  -d           only relays with DAITA
+  -t type      wireguard (wg) or bridge (br)
+  -c country   country code or name
+  -C city      city code or name
+  -p provider  hosting provider
+  -s gbps      a port speed of at least this many Gbit/s
+  -L           list the countries and cities, with their relay counts
+  -i           every field of each relay
+  -f fields    the fields named, comma-separated, as tab-separated lines
+  -w           the WireGuard [Peer] section for the one relay selected
+  -R           one relay, at random, of those selected
+  -h           show this help
+  host         a hostname, or its start: se-got
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+warn() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+# The parser and the selection, in one awk program.  The JSON is split
+# on its double quotes, so the pieces alternate between structure and
+# string contents, and only the short structural pieces are scanned
+# character by character.  Each relay is handed to relay() as rec[],
+# with its keys in their order in keys[1..nkeys]; a nested array is
+# flattened, scalars joined by commas, objects by " | ".
+# shellcheck disable=SC2016  # an awk program: its $ are awk's
+readonly relays_awk='
+function fail(code, msg) {
+    print prog ": " msg | "cat 1>&2"
+    close("cat 1>&2")
+    exit code
+}
+
+function unescape(s,    out, c, i) {
+    if (index(s, "\\") == 0 && s !~ /[\t\n\r]/)
+        return s
+    out = ""
+    for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "\\" && i < length(s)) {
+            c = substr(s, ++i, 1)
+            if (c == "n" || c == "t" || c == "r" || c == "b" || c == "f")
+                c = " "
+            else if (c == "u")
+                c = "\\u"
+        } else if (c == "\t" || c == "\n" || c == "\r")
+            c = " "
+        out = out c
+    }
+    return out
+}
+
+function odd_backslashes(s,    n) {
+    n = 0
+    while (n < length(s) && substr(s, length(s) - n, 1) == "\\")
+        n++
+    return n % 2
+}
+
+function open_relay() {
+    split("", rec)
+    nkeys = 0
+}
+
+function token(t, is_string) {
+    if (!is_string && t == "null")
+        t = ""
+    if (stack[depth] == "{" && expect_key) {
+        key[depth] = t
+        expect_key = 0
+        return
+    }
+    if (depth == 2) {
+        set_field(key[2], t)
+    } else if (depth == 3) {
+        nested = nested (nested == "" ? "" : ",") t
+    } else if (depth >= 4) {
+        object = object (object == "" ? "" : " ") t
+    }
+}
+
+function set_field(k, v) {
+    if (!(k in rec))
+        keys[++nkeys] = k
+    rec[k] = v
+}
+
+function structure(p,    i, c, lit) {
+    lit = ""
+    for (i = 1; i <= length(p); i++) {
+        c = substr(p, i, 1)
+        if (c ~ /[][{}:,]/ || c == " " || c == "\t" || c == "\n" ||
+            c == "\r") {
+            if (lit != "") {
+                token(lit, 0)
+                lit = ""
+            }
+        } else {
+            lit = lit c
+            continue
+        }
+        if (c == "{" || c == "[") {
+            if (depth == 0 && c != "[")
+                fail(1, "not a relay list")
+            stack[++depth] = c
+            expect_key = (c == "{")
+            if (depth == 2 && c == "{")
+                open_relay()
+            else if (depth == 3)
+                nested = ""
+            else if (depth == 4)
+                object = ""
+        } else if (c == "}" || c == "]") {
+            if (depth == 2 && c == "}")
+                relay()
+            else if (depth == 3)
+                set_field(key[2], nested)
+            else if (depth == 4)
+                nested = nested (nested == "" ? "" : " | ") object
+            depth--
+        } else if (c == ",") {
+            expect_key = (stack[depth] == "{")
+        } else if (c == ":") {
+            expect_key = 0
+        }
+    }
+    if (lit != "")
+        token(lit, 0)
+}
+
+# in_list(VALUE, LIST): VALUE, lowered, is one of the comma-separated
+# LIST, which is already lowered; an empty LIST matches everything.
+function in_list(v, list) {
+    if (list == "")
+        return 1
+    return index("," list ",", "," tolower(v) ",") > 0
+}
+
+function selected(    i, n, h) {
+    if (!all && rec["active"] != "true") return 0
+    if (mode == "peer" &&
+        (rec["type"] != "wireguard" || rec["pubkey"] == "")) return 0
+    if (owned && rec["owned"] != "true") return 0
+    if (daita && rec["daita"] != "true") return 0
+    if (speed != "" && rec["network_port_speed"] + 0 < speed + 0) return 0
+    if (!in_list(rec["type"], types)) return 0
+    if (!in_list(rec["country_code"], countries) &&
+        !in_list(rec["country_name"], countries)) return 0
+    if (!in_list(rec["city_code"], cities) &&
+        !in_list(rec["city_name"], cities)) return 0
+    if (!in_list(rec["provider"], providers)) return 0
+    if (nhosts == 0) return 1
+    for (i = 1; i <= nhosts; i++)
+        if (index(rec["hostname"], host[i]) == 1) return 1
+    return 0
+}
+
+function relay(    i, k) {
+    total++
+    for (i = 1; i <= nkeys; i++)
+        seen[keys[i]] = 1
+    if (!selected())
+        return
+    # -R: keep the n-th selected relay with probability 1/n, which
+    # leaves each one equally likely, in the one slot there is.
+    if (random) {
+        if (rand() * ++drawn >= 1)
+            return
+        for (i = 1; i <= nk[1]; i++)
+            delete val[1, rk[1, i]]
+        count = 1
+    } else
+        count++
+    nk[count] = nkeys
+    for (i = 1; i <= nkeys; i++) {
+        k = keys[i]
+        rk[count, i] = k
+        val[count, k] = rec[k]
+    }
+}
+
+# The width of S on a terminal: its bytes less UTF-8 continuation
+# bytes (awk runs under LC_ALL=C, so length() counts bytes).
+function width(s) {
+    gsub(/[\200-\277]/, "", s)
+    return length(s)
+}
+
+# Rows are row[r, c] for c in 1..ncols; the last column is not padded.
+function table(nrows,    r, c, w, line, pad) {
+    for (r = 0; r <= nrows; r++)
+        for (c = 1; c < ncols; c++)
+            if (width(row[r, c]) > w[c])
+                w[c] = width(row[r, c])
+    for (r = 0; r <= nrows; r++) {
+        line = ""
+        for (c = 1; c <= ncols; c++) {
+            line = line row[r, c]
+            if (c < ncols) {
+                for (pad = width(row[r, c]); pad < w[c] + 2; pad++)
+                    line = line " "
+            }
+        }
+        sub(/ +$/, "", line)
+        print line
+    }
+}
+
+function flags(r,    f) {
+    f = ""
+    if (val[r, "owned"] == "true") f = f ",owned"
+    if (val[r, "daita"] == "true") f = f ",daita"
+    if (val[r, "active"] != "true") f = f ",inactive"
+    if (val[r, "status_messages"] != "") f = f ",notice"
+    return substr(f, 2)
+}
+
+function list_relays(    r) {
+    ncols = split("HOSTNAME COUNTRY CITY PROVIDER GBPS FLAGS", head, " ")
+    for (r = 1; r <= ncols; r++)
+        row[0, r] = head[r]
+    for (r = 1; r <= count; r++) {
+        row[r, 1] = val[r, "hostname"]
+        row[r, 2] = val[r, "country_name"]
+        row[r, 3] = val[r, "city_name"]
+        row[r, 4] = val[r, "provider"]
+        row[r, 5] = val[r, "network_port_speed"]
+        row[r, 6] = flags(r)
+    }
+    table(count)
+}
+
+function list_places(    r, place, n, i) {
+    ncols = split("CC COUNTRY CODE CITY RELAYS", head, " ")
+    for (i = 1; i <= ncols; i++)
+        row[0, i] = head[i]
+    n = 0
+    for (r = 1; r <= count; r++) {
+        place = val[r, "country_code"] SUBSEP val[r, "city_code"]
+        if (!(place in line_of)) {
+            line_of[place] = ++n
+            row[n, 1] = val[r, "country_code"]
+            row[n, 2] = val[r, "country_name"]
+            row[n, 3] = val[r, "city_code"]
+            row[n, 4] = val[r, "city_name"]
+            row[n, 5] = 0
+        }
+        row[line_of[place], 5]++
+    }
+    table(n)
+}
+
+function describe(    r, i, w, k, line) {
+    w = 0
+    for (r = 1; r <= count; r++)
+        for (i = 1; i <= nk[r]; i++)
+            if (length(rk[r, i]) > w)
+                w = length(rk[r, i])
+    for (r = 1; r <= count; r++) {
+        if (r > 1)
+            print ""
+        for (i = 1; i <= nk[r]; i++) {
+            k = rk[r, i]
+            line = k ":"
+            while (length(line) < w + 2)
+                line = line " "
+            print line val[r, k]
+        }
+    }
+}
+
+function peer() {
+    print "[Peer]"
+    print "# " val[1, "hostname"] ", " val[1, "city_name"] ", " \
+        val[1, "country_name"] ", " val[1, "provider"]
+    print "PublicKey = " val[1, "pubkey"]
+    print "AllowedIPs = 0.0.0.0/0, ::/0"
+    print "Endpoint = " val[1, "ipv4_addr_in"] ":51820"
+}
+
+function fields(    r, i, line) {
+    for (r = 1; r <= count; r++) {
+        line = ""
+        for (i = 1; i <= nfields; i++)
+            line = line (i > 1 ? "\t" : "") val[r, field[i]]
+        print line
+    }
+}
+
+BEGIN {
+    srand()
+    srand(srand() + ENVIRON["MR_PID"])
+    prog = ENVIRON["MR_PROG"]
+    mode = ENVIRON["MR_MODE"]
+    all = ENVIRON["MR_ALL"] + 0
+    owned = ENVIRON["MR_OWNED"] + 0
+    daita = ENVIRON["MR_DAITA"] + 0
+    random = ENVIRON["MR_RANDOM"] + 0
+    speed = ENVIRON["MR_SPEED"]
+    types = ""
+    n = split(tolower(ENVIRON["MR_TYPES"]), part, ",")
+    for (i = 1; i <= n; i++) {
+        if (part[i] == "wg") part[i] = "wireguard"
+        else if (part[i] == "br") part[i] = "bridge"
+        types = types (i > 1 ? "," : "") part[i]
+    }
+    countries = tolower(ENVIRON["MR_COUNTRIES"])
+    cities = tolower(ENVIRON["MR_CITIES"])
+    providers = tolower(ENVIRON["MR_PROVIDERS"])
+    nhosts = split(ENVIRON["MR_HOSTS"], host, "\n")
+    nfields = split(ENVIRON["MR_FIELDS"], field, ",")
+    doc = ""
+}
+
+{ doc = doc $0 "\n" }
+
+END {
+    n = split(doc, part, "\"")
+    for (i = 1; i <= n; i++) {
+        p = part[i]
+        if (i % 2 == 1) {
+            structure(p)
+            continue
+        }
+        # An escaped quote split a string in two: put it back together.
+        while (odd_backslashes(p) && i < n)
+            p = p "\"" part[++i]
+        token(unescape(p), 1)
+    }
+    if (total == 0)
+        fail(1, "not a relay list")
+    if (mode == "count") {
+        print total
+        exit 0
+    }
+    for (i = 1; i <= nfields; i++)
+        if (!(field[i] in seen))
+            fail(2, "no such field: " field[i])
+    if (count == 0)
+        fail(1, "no relay matches")
+    if (mode == "peer" && count > 1)
+        fail(1, count " relays match; name one, or add -R")
+    if (mode == "places") list_places()
+    else if (mode == "peer") peer()
+    else if (mode == "info") describe()
+    else if (mode == "fields") fields()
+    else list_relays()
+}'
+
+# relays MODE FILE: run the awk program over FILE in MODE (count, or
+# the output wanted), the settings of the command line in its
+# environment.
+relays() {
+    LC_ALL=C MR_PROG=$prog MR_PID=$$ MR_MODE=$1 MR_ALL=$all \
+        MR_OWNED=$owned MR_DAITA=$daita MR_RANDOM=$random MR_SPEED=$speed \
+        MR_TYPES=$types MR_COUNTRIES=$countries MR_CITIES=$cities \
+        MR_PROVIDERS=$providers MR_HOSTS=$hosts MR_FIELDS=$fields \
+        awk "$relays_awk" "$2"
+}
+
+# fresh: the cached list exists and is less than a day old.
+fresh() {
+    [ -s "$cache" ] && [ -n "$(find "$cache" -mtime -1)" ]
+}
+
+# download FILE: the relay list into FILE, with curl, or with FreeBSD's
+# own fetch(1) where there is no curl.
+download() {
+    if command -v curl > /dev/null 2>&1; then
+        curl -fsS --max-time 30 -o "$1" -- "$api"
+    elif command -v fetch > /dev/null 2>&1; then
+        fetch -q -T 30 -o "$1" "$api"
+    else
+        warn "neither curl nor fetch is installed"
+        return 1
+    fi
+}
+
+# update_cache: download the list next to the cache, and replace the cache
+# only with a file that parses as a relay list.
+update_cache() {
+    mkdir -p -- "${cache%/*}" || return 1
+    new=$(mktemp "$cache.XXXXXX") || return 1
+    if download "$new" && relays count "$new" > /dev/null; then
+        mv -f -- "$new" "$cache"
+        new=
+        return 0
+    fi
+    rm -f -- "$new"
+    new=
+    return 1
+}
+
+refresh=0
+all=0
+owned=0
+daita=0
+random=0
+mode=table
+types=
+countries=
+cities=
+providers=
+speed=
+fields=
+
+while getopts raodt:c:C:p:s:Lif:wRh opt; do
+    case $opt in
+    r) refresh=1 ;;
+    a) all=1 ;;
+    o) owned=1 ;;
+    d) daita=1 ;;
+    t) types=$OPTARG ;;
+    c) countries=$OPTARG ;;
+    C) cities=$OPTARG ;;
+    p) providers=$OPTARG ;;
+    s) speed=$OPTARG ;;
+    L | i | f | w)
+        if [ "$mode" != table ]; then
+            printf '%s: -L, -i, -f and -w exclude one another\n' \
+                "$prog" >&2
+            exit 2
+        fi
+        case $opt in
+        L) mode=places ;;
+        i) mode=info ;;
+        f) mode=fields fields=$OPTARG ;;
+        w) mode=peer ;;
+        esac
+        ;;
+    R) random=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+case $speed in
+*[!0-9]*)
+    printf '%s: -s takes a whole number of Gbit/s: %s\n' "$prog" "$speed" >&2
+    exit 2
+    ;;
+esac
+if [ "$mode" = fields ]; then
+    case ,$fields, in
+    *,,* | *[!A-Za-z0-9_,]*)
+        printf '%s: -f takes field names, comma-separated: %s\n' \
+            "$prog" "$fields" >&2
+        exit 2
+        ;;
+    esac
+fi
+if [ "$mode" = places ] && [ "$random" -eq 1 ]; then
+    printf '%s: -R picks a relay, -L lists places: not both\n' "$prog" >&2
+    exit 2
+fi
+
+hosts=
+for h; do
+    case $h in
+    '' | *[!a-z0-9-]*)
+        printf '%s: not a relay hostname: %s\n' "$prog" "$h" >&2
+        exit 2
+        ;;
+    esac
+    hosts=${hosts:+$hosts
+}$h
+done
+
+cache=$MULLVAD_RELAYS_CACHE
+case $cache in
+/*) ;;
+*) cache=./$cache ;;
+esac
+
+new=
+trap '[ -z "$new" ] || rm -f -- "$new"' EXIT
+trap 'exit 1' HUP INT TERM
+
+if [ "$refresh" -eq 1 ] || ! fresh; then
+    if ! update_cache; then
+        [ -s "$cache" ] || die "cannot download the relay list"
+        warn "cannot download the relay list; using the cached one"
+    fi
+fi
+
+relays "$mode" "$cache"

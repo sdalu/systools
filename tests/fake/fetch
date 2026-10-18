@@ -1,0 +1,20 @@
+#!/bin/sh
+# fetch: FreeBSD's fetch(1).  Records its arguments in $FETCH_ARGV, one
+# per line, and writes $FETCH_BODY to the -o file, or to stdout without
+# -o.  $FETCH_EXIT makes it fail as fetch does when it cannot connect.
+printf '%s\n' "$@" > "$FETCH_ARGV"
+out=''
+prev=''
+for arg; do
+    [ "$prev" != -o ] || out=$arg
+    prev=$arg
+done
+if [ -n "${FETCH_EXIT-}" ]; then
+    printf 'fetch: %s: No address record\n' "$prev" >&2
+    exit "$FETCH_EXIT"
+fi
+if [ -n "$out" ]; then
+    printf '%s' "${FETCH_BODY-}" > "$out"
+else
+    printf '%s' "${FETCH_BODY-}"
+fi

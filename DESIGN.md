@@ -250,6 +250,29 @@ place, so the output always has the same columns. Linux omits the
 added, so the output is usable as is on both.
 
 
+## mullvad-relays: a cache, and JSON read by awk
+
+The list (about 300 KB) is downloaded at most once a day and kept, so a
+query is answered at once and does not ask Mullvad again. A download
+that fails, or does not parse as a relay list, leaves the cache in
+place, and the old list is used after a warning: a stale list of
+relays is still useful, whereas an error page is not. The download
+lands beside the cache and is renamed over it, so a reader never sees
+half a file. Without curl it falls back on FreeBSD's `fetch(1)`, which
+is enough for a GET, so it works on a FreeBSD base system as it is.
+
+The JSON is parsed by awk rather than by `jq`, keeping to the one tool
+the job is about (as `is-docked` and `pushover` do). Splitting the
+document on its double quotes leaves pieces that are, in turn,
+structure and string contents, so only the short structural pieces are
+scanned character by character, and the whole list parses in a fraction
+of a second. It reads any layout of the list's own shape, an array of
+flat objects, nested values flattened into a single field, rather than
+any JSON whatsoever. awk runs under `LC_ALL=C`, so every awk counts bytes
+the same way, and the table pads a UTF-8 name by its characters, its
+continuation bytes discounted.
+
+
 ## The suite: stand-ins on PATH
 
 `make tests` runs each tool unchanged, with `tests/fake/` first on

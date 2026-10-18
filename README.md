@@ -14,6 +14,7 @@ installed under a prefix; there is nothing to build.
 | `do-screenshot` | screenshot the X11 desktop, a mouse-picked area or the active window (now or after a countdown) to a dated PNG, copied to the clipboard and announced; without a mode, a rofi menu asks | `maim`; `xdotool` for a window; `xclip`, `notify-send` and `rofi` when present |
 | `is-docked` | tell whether a laptop sits in its dock: on external power, with a USB network interface, and with an external screen | `sysctl` and `ifconfig`, with drm-kmod for the screen (else `xrandr` under X) on FreeBSD; sysfs only on Linux |
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
+| `mullvad-relays` | list Mullvad's VPN relays, selected by country, city, type, provider, ownership, DAITA or speed, as a table, every field, chosen fields for scripts, or a count per place; `-R` draws one at random, `-w` prints its WireGuard `[Peer]` section | `curl`, or FreeBSD's `fetch`, once a day |
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
 | `pdf2jpg` | turn PDF pages into JPEGs at a pixel size, optionally under a byte cap per page, each stage done by the tool best at it | `pdftoppm`; `magick` to downsample; `cjpeg` (mozjpeg best) or `magick` to encode; `gs` for `-e gs` |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
@@ -70,7 +71,7 @@ make tests SH=dash              # the suite, with the scripts run under dash
 `make check` needs `shellcheck`; it also checks that the functions
 `transcribe` and `vocalise` share are still the same in both. `make
 tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
-`curl`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,
+`curl`, `fetch`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,
 `qrencode`, `wg`, `ps`, `pdftoppm`, `magick`, `cjpeg`, `ffmpeg`,
 `ffprobe`, `espeak-ng`, `piper`, `picom`, `pgrep`, `pkill`, `glxinfo`,
 `maim`, `xdotool`, `xclip`, `notify-send`, `rofi`, `vorbiscomment`,
@@ -109,6 +110,10 @@ line per check.
   unique: any network named like the one at home is home. The wired
   facts `-v` reports and the outside view of `external_view` are
   gathered for rules not yet written; no answer rests on them.
+- `mullvad-relays` reads the list through Mullvad's website API
+  (`/www/relays/all/`), which is public but undocumented, so a change
+  to its fields goes unannounced. Matching ignores case for ASCII
+  letters only: `-C malmö` finds Malmö, `-C MALMÖ` does not.
 - `vpn-status` never marks a WireGuard tunnel without
   `PersistentKeepalive` dead: idle, a peer stops handshaking, and that
   silence cannot be told from a peer that is gone.

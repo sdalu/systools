@@ -26,7 +26,7 @@ for tool in zfs curl ip route ssh uname nice idprio chrt ionice gs \
     sysctl ifconfig xrandr qrencode wg ps pdftoppm magick cjpeg ffmpeg \
     ffprobe espeak-ng picom pgrep pkill glxinfo maim xdotool xclip \
     notify-send rofi vorbiscomment iw wpa_cli uci ubus jsonfilter wifi \
-    piper; do
+    piper fetch; do
     if [ "$(command -v "$tool")" != "$fakes/$tool" ]; then
         printf 'Bail out: %s does not resolve to tests/fake/%s\n' \
             "$tool" "$tool"
