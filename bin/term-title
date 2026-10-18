@@ -1,0 +1,165 @@
+#!/bin/sh
+# term-title — set the terminal's window title or icon name, or run a
+# command under its own title
+# usage: term-title [-q] [-T type] [-o file] [-w|-i|-b] [text...]
+#        term-title [-q] [-T type] [-o file] [-w|-i|-b] -e command [arg...]
+#        term-title [-q] [-T type] [-o file] -s|-r
+#
+# The text is the arguments joined by spaces; none clears it.  Control
+# characters are removed from it, so a title taken from a file or a host
+# name cannot slip an escape sequence to the terminal.  With -e the title
+# is the command line, the previous one is saved first and restored when
+# the command ends (on Ctrl-C too), and the exit status is the command's.
+#
+# The sequence family follows TERM, or -T:
+#   xterm   xterm and every terminal speaking its OSC 0/1/2 (rxvt,
+#           alacritty, foot, kitty, st, wezterm, VTE and Konsole based,
+#           ...): the window title, the icon name (shown as the tab title
+#           by several), or both; the title stack for -s, -r and -e.
+#   screen  screen and tmux: the window name, whatever -w, -i or -b say;
+#           they keep no stack, so -s and -r are refused and -e leaves
+#           the command's name in place.
+# The sequence goes to the terminal (/dev/tty), so a redirected stdout
+# never receives it, or to stdout when there is no terminal, or to -o.
+# Exit status: 0 success, 1 a terminal it cannot title, 2 usage error;
+# with -e, the command's.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+prog=${0##*/}
+
+usage() {
+    cat <<EOF
+usage: $prog [-q] [-T type] [-o file] [-w|-i|-b] [text...]
+       $prog [-q] [-T type] [-o file] [-w|-i|-b] -e command [arg...]
+       $prog [-q] [-T type] [-o file] -s|-r
+  -w       set the window title
+  -i       set the icon name (the tab title, in several terminals)
+  -b       set both (the default)
+  -e       run COMMAND with its command line as the title, then restore
+  -s       save the title on the terminal's stack
+  -r       restore the title last saved
+  -T type  send xterm or screen sequences, whatever TERM says
+  -o file  write the sequences to FILE (default: the terminal)
+  -q       quiet: no message for a terminal it cannot title
+  -h       show this help
+EOF
+}
+
+bad_usage() {
+    usage >&2
+    exit 2
+}
+
+refuse() {
+    [ "$quiet" -eq 1 ] || printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+# set_title TEXT, and the xterm title stack: save_title, restore_title
+set_title() {
+    local text
+    text=$(printf '%s' "$1" | tr -d '\000-\037\177')
+    case $family in
+    screen) printf '\033k%s\033\134' "$text" >&3 ;;
+    xterm)  printf '\033]%s;%s\007' "$ps" "$text" >&3 ;;
+    esac
+}
+save_title() {
+    printf '\033[22;%st' "$ps" >&3
+}
+restore_title() {
+    printf '\033[23;%st' "$ps" >&3
+}
+
+quiet=0
+what=
+action=title
+family=
+out=
+while getopts wibesrT:o:qh opt; do
+    case $opt in
+    w | i | b)
+        [ -z "$what" ] || [ "$what" = "$opt" ] || bad_usage
+        what=$opt
+        ;;
+    e | s | r)
+        [ "$action" = title ] || [ "$action" = "$opt" ] || bad_usage
+        action=$opt
+        ;;
+    T)
+        case $OPTARG in
+        xterm | screen) family=$OPTARG ;;
+        *) printf '%s: -T takes xterm or screen, not: %s\n' "$prog" \
+               "$OPTARG" >&2
+           exit 2 ;;
+        esac
+        ;;
+    o) out=$OPTARG ;;
+    q) quiet=1 ;;
+    h) usage; exit 0 ;;
+    *) bad_usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+case $action in
+s | r) [ "$#" -eq 0 ] || bad_usage ;;
+e) [ "$#" -gt 0 ] || bad_usage ;;
+esac
+
+case $what in
+'' | b) ps=0 ;;
+i)      ps=1 ;;
+w)      ps=2 ;;
+esac
+
+if [ -z "$family" ]; then
+    case ${TERM-} in
+    screen* | tmux*) family=screen ;;
+    xterm* | rxvt* | alacritty* | foot* | kitty* | st | st-* | wezterm* | \
+        konsole* | gnome* | vte* | contour* | ghostty* | iterm*)
+        family=xterm ;;
+    *)
+        if [ "$action" = e ]; then
+            exec "$@"
+        fi
+        refuse "cannot set the title of a ${TERM:-unknown} terminal (try -T)"
+        ;;
+    esac
+fi
+
+# fd 3 is where the sequences go, opened once.  A redirection that fails
+# on exec ends a non-interactive shell, so /dev/tty is tried in a
+# subshell first: it exists even where there is no terminal to open.
+if [ -n "$out" ]; then
+    exec 3>> "$out"
+elif (: > /dev/tty) 2> /dev/null; then
+    exec 3> /dev/tty
+else
+    exec 3>&1
+fi
+
+case $action in
+title)
+    set_title "$*"
+    ;;
+s | r)
+    [ "$family" = xterm ] || refuse "screen and tmux keep no title stack"
+    if [ "$action" = s ]; then save_title; else restore_title; fi
+    ;;
+e)
+    if [ "$family" = xterm ]; then
+        save_title
+        trap 'restore_title' EXIT
+        trap 'exit 130' INT
+        trap 'exit 143' TERM
+        trap 'exit 129' HUP
+    fi
+    set_title "$*"
+    status=0
+    "$@" || status=$?
+    exit "$status"
+    ;;
+esac

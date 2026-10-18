@@ -17,6 +17,7 @@ installed under a prefix; there is nothing to build.
 | `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
 | `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
+| `term-title` | set the terminal's window title or icon name (the window name under screen and tmux), or run a command under its own title and restore the old one | a terminal that speaks xterm's title sequences, or screen or tmux |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
 | `zfs-snapshot` | take today's dated snapshot of a dataset and expire old ones; meant to run once a day | `zfs` |
@@ -25,8 +26,9 @@ Each tool prints its usage with `-h`; the header comment at the top of
 each script says the rest -- configuration, defaults, platform
 differences. Options are short ones only (`-r`, not `--recursive`). Exit
 status is 0 on success, 1 on failure and 2 on a usage error, except for
-`low-priority` and `with-gnu-make`, which run a command and return its
-own, and `is-docked`, which answers with 0 (docked) or 1 (not).
+`low-priority`, `with-gnu-make` and `term-title -e`, which run a command
+and return its own, and `is-docked`, which answers with 0 (docked) or 1
+(not).
 
 Where a tool calls `zfs`, `route`, `ip` or `idprio`, it adds the sbin
 directories they live in to the end of `PATH`, so it also works on Linux
@@ -82,6 +84,9 @@ its header and prints one line per check.
   and `-s`.
 - `screen-mirror` works under X11 only; a Wayland session has no
   `xrandr` to drive.
+- `term-title` knows terminals by `TERM`; one outside its list is
+  refused unless `-T` names the sequences to send. Restoring a title
+  needs the terminal's title stack, which screen and tmux lack.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
 - The suite covers the local half of `openwrt-acl`, not the script it

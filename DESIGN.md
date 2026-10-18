@@ -107,6 +107,18 @@ through a half-applied layout. Why the largest common mode rather than
 the code that does it.
 
 
+## term-title: to the terminal, and back again
+
+The sequences are written to `/dev/tty`, not to stdout, so a tool whose
+output is redirected -- `term-title -e make > build.log` -- never puts
+escape codes into the file; stdout is the fallback when there is no
+terminal, and `-o` names a file outright. `-e` restores the previous
+title from the terminal's own title stack (`CSI 22 t` to save,
+`CSI 23 t` to restore) rather than from a title read back, because
+reading a title back is a query most terminals refuse to answer. The
+restore runs from the EXIT trap, so Ctrl-C restores too.
+
+
 ## shrinkpdf: never worse than the input
 
 Ghostscript writes to a temporary file, and only then is the smaller of
