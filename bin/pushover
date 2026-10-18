@@ -5,7 +5,7 @@ Version = '0.1.0'
 require 'optparse'
 require 'yaml'
 require 'socket'
-require 'pushover'
+require_relative '../lib/systools/pushover'
 
 
 # Parse command line
