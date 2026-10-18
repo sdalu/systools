@@ -1,0 +1,25 @@
+#!/bin/sh
+# piper: piper1-gpl's interface.  --help shows its flags; -f FILE writes
+# a 22050 Hz WAV with one byte of audio per byte of the --input-file
+# text.  Every call is logged to $PIPER_LOG.
+printf '%s\n' "$*" >> "${PIPER_LOG:-/dev/null}"
+if [ "${1-}" = --help ]; then
+    printf 'usage: piper -m MODEL -f OUTPUT_FILE --input-file FILE\n'
+    exit 0
+fi
+out=''
+text=''
+prev=''
+for arg; do
+    case $prev in
+    -f) out=$arg ;;
+    --input-file) text=$arg ;;
+    esac
+    prev=$arg
+done
+n=$(wc -c < "$text")
+{
+    printf 'RIFF0000WAVEfmt 0000\001\000\001\000\042\126\000\000'
+    printf '0000\002\000\020\000data0000'
+    head -c "$n" /dev/zero
+} > "$out"

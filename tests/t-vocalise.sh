@@ -153,6 +153,58 @@ rm -f -- "$wav"
 $SH "$top/bin/vocalise" -q -o "$wav" < "$tmp/text"
 check_in "$(cat "$CURL_REQUESTS")" '"text":"From stdin."' "text from stdin, its newline dropped"
 
+# piper voices for a language with a region: pt-br, the help's own
+# example, is piper's pt_BR, upper-case region and all.
+export PIPER_LOG="$tmp/piper.log"
+mkdir -p "$tmp/pv"
+: > "$tmp/pv/pt_BR-faber-medium.onnx"
+printf '{}\n' > "$tmp/pv/pt_BR-faber-medium.onnx.json"
+export PIPER_VOICE_PATH="$tmp/pv"
+for l in pt-br pt_BR PT-BR; do
+    run vocalise -E piper -l "$l" -L
+    check_in "$out" "pt_BR-faber-medium" "-l $l: the installed pt_BR voice is found"
+done
+: > "$PIPER_LOG"
+export ESPEAK_LANGS='pt-br'
+say -l pt-br -o "$wav" 'Olá.'
+export PIPER_VOICE_PATH="$tmp/voices" ESPEAK_LANGS='fr nl'
+check_in "$(cat "$PIPER_LOG")" "pt_BR-faber-medium.onnx" \
+    "-l pt-br, default engine: piper speaks, not espeak"
+check_in "$err" "(piper, pt_BR-faber-medium.onnx)" "-l pt-br: announced as piper"
+# shellcheck disable=SC2089,SC2090  # the quotes are the JSON index's
+CURL_BODY='{"pt_BR-faber-medium": {"key": "pt_BR-faber-medium"},
+ "fr_FR-siwis-medium": {"key": "fr_FR-siwis-medium"}}'
+# shellcheck disable=SC2090
+export CURL_BODY
+run vocalise -q -D -l pt-br
+check_eq "$out" "piper/pt_BR-faber-medium" "-D -l pt-br: the downloadable pt_BR voice listed"
+unset CURL_BODY
+
+# A cut never lands inside a UTF-8 character, whatever the locale: under
+# C, awk counts bytes, and 'a' then 2-byte characters puts byte 1190 --
+# the first cut -- on a character's first byte.
+long=$(awk 'BEGIN { printf "a"; for (i = 0; i < 1000; i++) printf "\303\274" }')
+export LC_ALL=C
+say -o "$wav" "$long"
+unset LC_ALL
+check_rc 0 "C locale, long text with no space: succeeds"
+check_eq "$(requests)" 2 "C locale: split in two"
+# the last byte of the first piece, and the first of the second
+piece() {
+    sed -n "$1p" "$CURL_REQUESTS" | sed 's/.*"text":"//; s/"}$//' | tr -d '\n'
+}
+last=$(piece 1 | od -An -tx1 | tr -s ' \n' ' ' | awk '{ print $NF }')
+first=$(piece 2 | od -An -tx1 | awk '{ print $1; exit }')
+check_eq "$last $first" "bc c3" \
+    "C locale: the cut falls between two characters, not inside one"
+check_in "$err" "1001 chars" "C locale: characters counted (1001), not bytes (2001)"
+
+export CURL_RIVA=10
+say -o "$wav" "$(awk 'BEGIN { for (i = 1; i <= 30; i++) printf "Word number %02d here. ", i }')"
+check_in "$err" "even cut into 148-character pieces" \
+    "never short enough: the last size actually tried, not the floor"
+export CURL_RIVA=100000
+
 for args in '-A bogus' '-E bogus' '-r 7000' '-r abc' '-b x' '-f flac -b 9' \
     '-s 3' '-s abc' '-z'; do
     # shellcheck disable=SC2086  # each case is a word list

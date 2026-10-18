@@ -72,14 +72,14 @@ make tests SH=dash              # the suite, with the scripts run under dash
 tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
 `curl`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,
 `qrencode`, `wg`, `ps`, `pdftoppm`, `magick`, `cjpeg`, `ffmpeg`,
-`ffprobe`, `espeak-ng`, `picom`, `pgrep`, `pkill`, `glxinfo`, `maim`,
-`xdotool`, `xclip`, `notify-send`, `rofi`, `vorbiscomment`, `iw`,
-`wpa_cli`, OpenWrt's `uci`, `ubus`, `jsonfilter` and `wifi`, `uname` and
-the priority tools, an editor (`edit-tags`), and a sysfs tree for Linux,
-so it touches no pool, no network and no router, and it takes the
-FreeBSD and the Linux branch of each tool on either system. Each
-`tests/t-*.sh` names what it checks in its header and prints one line
-per check.
+`ffprobe`, `espeak-ng`, `piper`, `picom`, `pgrep`, `pkill`, `glxinfo`,
+`maim`, `xdotool`, `xclip`, `notify-send`, `rofi`, `vorbiscomment`,
+`iw`, `wpa_cli`, OpenWrt's `uci`, `ubus`, `jsonfilter` and `wifi`,
+`uname` and the priority tools, an editor (`edit-tags`), and a sysfs
+tree for Linux, so it touches no pool, no network and no router, and it
+takes the FreeBSD and the Linux branch of each tool on either system.
+Each `tests/t-*.sh` names what it checks in its header and prints one
+line per check.
 
 
 ## Known shortfalls

@@ -351,6 +351,15 @@ stage_credentials() {
          > "$tmpdir/curlrc") || die "could not stage the credentials"
 }
 
+# The characters in stdin, whatever the locale: UTF-8 continuation bytes
+# (0x80-0xbf) are left out of the count, where wc -m under C would count
+# every byte.
+char_count() {
+    local n
+    n=$(LC_ALL=C tr -d '\200-\277' | wc -c)
+    printf '%s\n' $((n))
+}
+
 # A path that can never be read as an option by a tool lacking "--".
 safe_path() {
     case $1 in
@@ -445,13 +454,26 @@ espeak_can() {
     [ -n "$(espeak_voices "$1" || true)" ]
 }
 
+# The language part of a piper voice key for a language tag: piper keys
+# are <lang>_<REGION>, so pt-br, pt_BR and PT-BR are all pt_BR, and a
+# bare fr stays fr.
+piper_code() {
+    local lang region
+    lang=$(printf '%s' "${1%%[-_]*}" | tr '[:upper:]' '[:lower:]')
+    case $1 in
+        *[-_]*) region=$(printf '%s' "${1#*[-_]}" | tr '[:lower:]' '[:upper:]')
+                printf '%s_%s\n' "$lang" "$region" ;;
+        *)      printf '%s\n' "$lang" ;;
+    esac
+}
+
 # piper voices are <lang>_<REGION>-<name>-<quality>.onnx beside a .json
 # of the same name; the language part uses an underscore where a BCP 47
-# tag uses a hyphen.
+# tag uses a hyphen, and the region is upper case.
 piper_voices() {
     local stem alt
     stem=$1
-    alt=$(printf '%s' "$1" | tr - _)
+    alt=$(piper_code "$1")
     (
         IFS=:
         set -f
@@ -620,8 +642,21 @@ resolve_speed() {
 # to do is backslash and double quote. The cut is taken at the last
 # sentence end that fits, then the last clause end, then the last word
 # boundary, and only failing all three in mid-word.
+# The limit is in bytes, whatever the locale: awk runs under C, where
+# length and substr count bytes, and a cut is moved back off any UTF-8
+# continuation byte (0x80-0xbf), so no character is ever split between
+# two pieces -- and bytes are never fewer than characters, so the
+# character limit Riva enforces is still kept.
 split_text() {
-    awk -v limit="$1" -v dir="$tmpdir" '
+    LC_ALL=C awk -v limit="$1" -v dir="$tmpdir" '
+        function whole(t, cut,    c) {
+            while (cut > 1) {
+                c = substr(t, cut + 1, 1)
+                if (c < "\200" || c > "\277") break
+                cut--
+            }
+            return cut
+        }
         { text = text " " $0 }
         END {
             gsub(/[[:cntrl:]]/, " ", text)
@@ -639,6 +674,7 @@ split_text() {
                     else if (match(window, /^.*[,;:] /))      cut = RLENGTH
                     else if (match(window, /^.* /))           cut = RLENGTH
                     else                                      cut = limit
+                    cut = whole(text, cut)
                     piece = substr(text, 1, cut)
                     text = substr(text, cut + 1)
                 }
@@ -807,10 +843,11 @@ synth_riva() {
         if synthesise "$pieces"; then
             break
         fi
+        tried=$limit
         limit=$((limit / 2))
         [ "$limit" -ge "$chunk_floor" ] ||
-            die "the text is still too big for the model when cut into" \
-                "$chunk_floor-character pieces"
+            die "the text is still too big for the model, even cut into" \
+                "$tried-character pieces"
         [ "$quiet" = yes ] ||
             warn "piece too big for the model; retrying at $limit chars"
     done
@@ -933,8 +970,8 @@ voices_index() {
 # what -l selects on, as either the family (fr) or the full code (fr_FR).
 voice_prefix_for() {
     case $1 in
-        *[-_]*) printf '%s\n' "$(printf '%s' "$1" | tr - _)" ;;
-        *)      printf '%s_\n' "$1" ;;
+        *[-_]*) piper_code "$1" ;;
+        *)      printf '%s_\n' "$(piper_code "$1")" ;;
     esac
 }
 
@@ -1588,7 +1625,7 @@ main() {
     # when split_text collapses it to nothing, but the local engines
     # would render it as silence and report success.
     grep -q '[^[:space:]]' < "$tmpdir/text" || die "no text to speak"
-    chars=$(wc -m < "$tmpdir/text")
+    chars=$(char_count < "$tmpdir/text")
     chars=$((chars))
     # A trailing newline is not part of the text: printf put one there
     # that the operand never had, and stdin usually carries one too.

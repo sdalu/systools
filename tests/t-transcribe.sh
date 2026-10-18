@@ -114,6 +114,15 @@ check_eq "$(argv)" "" "a token with a quote: curl not run"
 export OVH_AI_TOKEN='tok.EN-123_x'
 unset OVH_AI_ENDPOINTS_API_KEY
 
+# The 900-character limit counts characters under any locale: 500
+# accented ones are 1000 bytes, and under C wc -m would count bytes.
+accented=$(awk 'BEGIN { while (n++ < 500) printf "\303\251" }')
+export LC_ALL=C
+tr_ -p "$accented" "$clip"
+unset LC_ALL
+check_rc 0 "C locale, 500 accented characters: under the limit"
+check_in "$err" "prompt set (500 chars)" "C locale: characters counted, not bytes"
+
 long=$(awk 'BEGIN { while (n++ < 901) printf "a" }')
 for args in "-f srtx $clip" "-o $tmp/o $clip $clip" "-p $long $clip" '' \
     "-z $clip"; do

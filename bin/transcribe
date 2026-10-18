@@ -198,6 +198,15 @@ stage_credentials() {
          > "$tmpdir/curlrc") || die "could not stage the credentials"
 }
 
+# The characters in stdin, whatever the locale: UTF-8 continuation bytes
+# (0x80-0xbf) are left out of the count, where wc -m under C would count
+# every byte.
+char_count() {
+    local n
+    n=$(LC_ALL=C tr -d '\200-\277' | wc -c)
+    printf '%s\n' $((n))
+}
+
 # A path that can never be read as an option by a tool lacking "--".
 safe_path() {
     case $1 in
@@ -395,7 +404,7 @@ main() {
     if [ -n "$prompt" ]; then
         # The limit is characters, so -m: an accented French prompt is
         # shorter than its byte count. wc pads on the BSD userland.
-        prompt_size=$(printf '%s' "$prompt" | wc -m)
+        prompt_size=$(printf '%s' "$prompt" | char_count)
         prompt_size=$((prompt_size))
         [ "$prompt_size" -le "$prompt_limit" ] ||
             bad "prompt is $prompt_size characters, limit is $prompt_limit;" \

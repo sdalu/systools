@@ -6,7 +6,8 @@
 set -u
 
 top=$(cd -- "$(dirname -- "$0")/.." && pwd)
-shared='bad aichat_token authinfo_token read_token stage_credentials safe_path'
+shared='bad aichat_token authinfo_token read_token stage_credentials safe_path
+    char_count'
 
 body() {
     sed -n "/^$1() {/,/^}/p" "$top/bin/$2"
