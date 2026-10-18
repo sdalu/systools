@@ -126,7 +126,7 @@ best_quality() {
 
 # render PAGE LONG-EDGE-PT — rasterise one page; prints the raster's path
 render() {
-    local raster="$tmp/raster.$ext" dpi
+    local raster="$tmp/raster.$ext" dpi n="$1"
     rm -f -- "$raster"
     case $engine in
     poppler)
@@ -138,7 +138,6 @@ render() {
     gs)
         dpi=$(awk -v px="$max_px" -v x="$oversample" -v pt="$2" \
             'BEGIN { printf "%.4f", px * 72.0 * x / pt }')
-        local n="$1"
         if [ "$gray" -eq 1 ]; then
             set -- -sDEVICE=pgmraw
         else
@@ -151,10 +150,9 @@ render() {
             -dGraphicsAlphaBits=4 "$@" -r"$dpi" -dFirstPage="$n" \
             -dLastPage="$n" -sOutputFile="$raster" "$input" \
             2> "$tmp/render.err"
-        set -- "$n"
         ;;
     esac && [ -s "$raster" ] ||
-        die "page $1: $(cat "$tmp/render.err")"
+        die "page $n: $(cat "$tmp/render.err")"
     printf '%s\n' "$raster"
 }
 

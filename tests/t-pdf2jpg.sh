@@ -179,6 +179,12 @@ p2j '596x842'
 unset PDFTOPPM_FAIL
 check_rc 1 "pdftoppm fails: exit 1"
 check_in "$err" "probe failed" "pdftoppm fails: said so"
+export PDFTOPPM_FAIL_PAGE=2
+p2j "$three" -w 600
+unset PDFTOPPM_FAIL_PAGE
+check_rc 1 "a page fails to render: exit 1"
+check_in "$err" "page 2: Syntax Error: Bad page 2" \
+    "a page fails to render: named by its number"
 
 for args in '-w 0' '-w x' '-q 0' '-q 101' '-x 0' '-x abc' '-x 0.5' \
     '-s abc' '-s 500kg' '-s 1.5mx' '-n sometimes' '-e cairo' '-i my.icc' \

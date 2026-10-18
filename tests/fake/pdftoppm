@@ -3,7 +3,8 @@
 # $PDFTOPPM_PAGES ("596x842 842x596 ..."), numbered with as many digits as
 # the page count has.  With -singlefile, the page as ROOT.ppm (ROOT.pgm
 # with -gray), its long edge the -scale-to value.  Every call is logged to
-# $PDFTOPPM_LOG; $PDFTOPPM_FAIL makes it fail.
+# $PDFTOPPM_LOG; $PDFTOPPM_FAIL makes it fail, $PDFTOPPM_FAIL_PAGE fails
+# the rendering of that one page.
 printf '%s\n' "$*" >> "$PDFTOPPM_LOG"
 if [ -n "${PDFTOPPM_FAIL-}" ]; then
     printf 'Syntax Error: Couldn'"'"'t read xref table\n' >&2
@@ -38,6 +39,10 @@ probe)
     done
     ;;
 page)
+    if [ "$page" = "${PDFTOPPM_FAIL_PAGE-}" ]; then
+        printf 'Syntax Error: Bad page %s\n' "$page" >&2
+        exit 1
+    fi
     shift $((page - 1))
     w=${1%x*}
     h=${1#*x}
