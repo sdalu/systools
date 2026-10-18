@@ -48,8 +48,11 @@ uci is the source of truth; the change is committed there first.  Applying
 it costs a reassociation: hostapd reads its accept-list only when its
 config loads, so the BSSes carrying the SSID are reloaded, and their
 clients reconnect within a few seconds.  Other SSIDs on the same radio are
-left alone unless -f is given.  Installing hostapd-utils on the router
-would allow a genuinely live update (hostapd_cli accept_acl add_mac).
+left alone unless -f is given: where a BSS cannot be reloaded alone (no
+hostapd accept-list file for it), the change waits for the next reload.
+A MAC matches however it is stored -- case, colons, dashes or none.
+Installing hostapd-utils on the router would allow a genuinely live
+update (hostapd_cli accept_acl add_mac).
 EOF
 }
 
@@ -128,9 +131,27 @@ if [ "$band" != all ]; then
     sections=$kept
 fi
 
-ifmap=$(ubus call network.wireless status |
-    jsonfilter -e '@[*].interfaces[*]["section","ifname"]' |
-    awk 'NR % 2 { s = $0; next } { print s, $0 }')
+# Each stage checked on its own: in a pipe only the last one's status
+# counts, and an empty map would quietly make every radio look idle.
+status=$(ubus call network.wireless status) ||
+    { printf 'ubus cannot report the wireless status\n' >&2; exit 1; }
+ifmap=$(printf '%s\n' "$status" |
+    jsonfilter -e '@[*].interfaces[*]["section","ifname"]') ||
+    { printf 'jsonfilter cannot read the wireless status\n' >&2; exit 1; }
+ifmap=$(printf '%s\n' "$ifmap" | awk 'NR % 2 { s = $0; next } { print s, $0 }')
+
+# hostapd's accept-list files; the variable is for the tests alone
+rundir=${HOSTAPD_RUN_DIR:-/var/run}
+
+# canon(m): a MAC as aa:bb:cc:dd:ee:ff, however it was spelt -- upper
+# case, dashes, dots or none -- so that entries stored any which way
+# match; anything that is not a MAC is only lowercased
+canon='function canon(m,  h) {
+    h = tolower(m); gsub(/[:.-]/, "", h)
+    if (h !~ /^[0-9a-f]+$/ || length(h) != 12) return tolower(m)
+    return substr(h, 1, 2) ":" substr(h, 3, 2) ":" substr(h, 5, 2) ":" \
+        substr(h, 7, 2) ":" substr(h, 9, 2) ":" substr(h, 11, 2)
+}'
 
 ifname_of() {
     printf '%s\n' "$ifmap" | awk -v s="$1" '$1 == s { print $2; exit }'
@@ -152,7 +173,8 @@ emit_ifaces() {
 # /etc/ethers is the house name registry; dnsmasq reads it too
 emit_names() {
     [ -f /etc/ethers ] || return 0
-    awk '$0 !~ /^[ \t]*#/ && NF >= 2 { print "name\t" tolower($1) "\t" $2 }' \
+    awk "$canon"'
+        $0 !~ /^[ \t]*#/ && NF >= 2 { print "name\t" canon($1) "\t" $2 }' \
         /etc/ethers
 }
 
@@ -161,8 +183,8 @@ resolve() {
     case "$1" in
         ??:??:??:??:??:??) printf '%s\n' "$1"; return 0 ;;
     esac
-    found=$(awk -v n="$1" \
-        '$0 !~ /^[ \t]*#/ && NF >= 2 && $2 == n { print tolower($1); exit }' \
+    found=$(awk -v n="$1" "$canon"'
+        $0 !~ /^[ \t]*#/ && NF >= 2 && $2 == n { print canon($1); exit }' \
         /etc/ethers 2>/dev/null)
     if [ -z "$found" ]; then
         printf 'no such name in /etc/ethers: %s\n' "$1" >&2
@@ -173,7 +195,7 @@ resolve() {
 
 emit_macs() {
     for s in $sections; do
-        raw_list "$s" | awk '{ print tolower($0) }' | sort -u |
+        raw_list "$s" | awk "$canon"'{ print canon($0) }' | sort -u |
             awk -v s="$s" '{ print "mac\t" s "\t" $0 }'
     done
 }
@@ -210,7 +232,7 @@ add | del)
             cur=$(raw_list "$s")
             for m in $targets; do
                 match=$(printf '%s\n' "$cur" |
-                    awk -v m="$m" 'tolower($0) == m')
+                    awk -v m="$m" "$canon"'NF && canon($0) == canon(m)')
                 if [ "$verb" = del ]; then
                     for e in $match; do
                         printf 'del\t%s\t%s\n' "$s" "$e"
@@ -252,19 +274,25 @@ add | del)
         exit 0
     fi
 
-    live=0
-    if [ "$full" = 0 ]; then
-        live=1
-        for s in $sections; do
-            i=$(ifname_of "$s")
-            [ -n "$i" ] && [ -f "/var/run/hostapd-$i.maclist" ] || live=0
-        done
+    if [ "$full" != 0 ]; then
+        (sleep 2; wifi reload) >/dev/null 2>&1 </dev/null &
+        printf 'committed; full wifi reload, every client reassociates\n'
+        exit 0
     fi
+
+    # Per BSS needs each one's interface and its hostapd accept-list
+    # file; without them the change waits for the next reload rather
+    # than reloading every SSID behind the caller's back.
+    live=1
+    for s in $sections; do
+        i=$(ifname_of "$s")
+        [ -n "$i" ] && [ -f "$rundir/hostapd-$i.maclist" ] || live=0
+    done
 
     if [ "$live" = 1 ]; then
         for s in $sections; do
             i=$(ifname_of "$s")
-            f=/var/run/hostapd-$i.maclist
+            f=$rundir/hostapd-$i.maclist
             raw_list "$s" > "$f.new"
             mv "$f.new" "$f"
         done
@@ -278,8 +306,10 @@ add | del)
         ) >/dev/null 2>&1 </dev/null &
         printf 'committed; reloading %s, its clients reassociate\n' "$ssid"
     else
-        (sleep 2; wifi reload) >/dev/null 2>&1 </dev/null &
-        printf 'committed; full wifi reload, every client reassociates\n'
+        printf 'committed; not applied: %s cannot be reloaded alone here,\n' \
+            "$ssid"
+        printf '%s\n' \
+            'so it takes effect on the next reload (-f reloads all wifi now)'
     fi
     ;;
 *)

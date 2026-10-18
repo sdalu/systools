@@ -1,0 +1,35 @@
+#!/bin/sh
+# uci: a wireless config held in $UCI_STATE, one "key value" line per
+# option, a list option once per item (wireless.sec1.maclist AA-BB-...).
+# show prints key='value' for the single options, -q get prints an
+# option's items space-separated (fails when it has none), add_list and
+# del_list change the list, and they and commit are logged to $UCI_LOG.
+st=$UCI_STATE
+[ "${1-}" != -q ] || shift
+case ${1-} in
+show)
+    awk -v p="$2." 'index($1, p) == 1 && !seen[$1]++ {
+        v = $0; sub(/^[^ ]* /, "", v); print $1 "=\047" v "\047" }' "$st"
+    ;;
+get)
+    v=$(awk -v k="$2" '$1 == k { sub(/^[^ ]* /, ""); print }' "$st" |
+        tr '\n' ' ')
+    [ -n "$v" ] || exit 1
+    printf '%s\n' "${v% }"
+    ;;
+add_list)
+    printf '%s\n' "$*" >> "$UCI_LOG"
+    printf '%s %s\n' "${2%%=*}" "${2#*=}" >> "$st"
+    ;;
+del_list)
+    printf '%s\n' "$*" >> "$UCI_LOG"
+    awk -v k="${2%%=*}" -v v="${2#*=}" '!($1 == k && $2 == v)' "$st" \
+        > "$st.new" && mv -- "$st.new" "$st"
+    ;;
+commit)
+    printf '%s\n' "$*" >> "$UCI_LOG"
+    ;;
+*)
+    exit 1
+    ;;
+esac

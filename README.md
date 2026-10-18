@@ -74,11 +74,12 @@ tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
 `qrencode`, `wg`, `ps`, `pdftoppm`, `magick`, `cjpeg`, `ffmpeg`,
 `ffprobe`, `espeak-ng`, `picom`, `pgrep`, `pkill`, `glxinfo`, `maim`,
 `xdotool`, `xclip`, `notify-send`, `rofi`, `vorbiscomment`, `iw`,
-`wpa_cli`, `uname` and the priority tools, an editor (`edit-tags`), and
-a sysfs tree for Linux, so it touches no pool, no network and no router,
-and it takes the FreeBSD and the Linux branch of each tool on either
-system. Each `tests/t-*.sh` names what it checks in its header and
-prints one line per check.
+`wpa_cli`, OpenWrt's `uci`, `ubus`, `jsonfilter` and `wifi`, `uname` and
+the priority tools, an editor (`edit-tags`), and a sysfs tree for Linux,
+so it touches no pool, no network and no router, and it takes the
+FreeBSD and the Linux branch of each tool on either system. Each
+`tests/t-*.sh` names what it checks in its header and prints one line
+per check.
 
 
 ## Known shortfalls
@@ -122,10 +123,9 @@ prints one line per check.
   shows, and accepts only tokens made of letters and digits.
 - `vorbisedit` edits Ogg Vorbis only; an Opus file's tags need
   `opustags`.
-- The suite covers the local half of `openwrt-acl`, not the script it
-  runs on the router, not `with-gnu-make`'s `gcc` shim, not `qr`
-  drawing in a terminal, and not `do-screenshot` without `rofi`,
-  `xclip` or `notify-send`, nor `where-am-i` without `wpa_cli`, on a
-  host that has them in its system directories (this one, and its
-  Linux layer, which sees them there too). Nothing
+- The suite runs `openwrt-acl`'s router half against stand-ins, not on
+  OpenWrt, and covers neither `with-gnu-make`'s `gcc` shim nor `qr`
+  drawing in a terminal. On a host whose system directories hold
+  `rofi`, `xclip`, `notify-send` or `wpa_cli`, the cases of
+  `do-screenshot` and `where-am-i` without them skip themselves. Nothing
   has been run under BusyBox.

@@ -1,0 +1,3 @@
+#!/bin/sh
+# wifi: logs its arguments to $WIFI_LOG.
+printf '%s\n' "$*" >> "${WIFI_LOG:-/dev/null}"

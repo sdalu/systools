@@ -1,0 +1,6 @@
+#!/bin/sh
+# jsonfilter: reads its stdin and prints $JSONFILTER_OUTPUT, the
+# "section", "ifname" lines it would extract, or fails with $JSONFILTER_EXIT.
+cat > /dev/null
+[ -z "${JSONFILTER_EXIT-}" ] || exit "$JSONFILTER_EXIT"
+[ -z "${JSONFILTER_OUTPUT-}" ] || printf '%s\n' "$JSONFILTER_OUTPUT"

@@ -59,4 +59,93 @@ for args in '' '-z list'; do
     check_rc 2 "refuses [$args] as a usage error"
 done
 
+# --- the router's half -------------------------------------------------
+# The script openwrt-acl sends over ssh, lifted out of it and run here
+# against stand-ins for uci, ubus, jsonfilter and wifi.  Its arguments:
+# ssid verb dry full defer band [mac...].
+
+sed -n "/<<'REMOTE'\$/,/^REMOTE\$/p" "$top/bin/openwrt-acl" | sed '1d;$d' \
+    > "$tmp/remote.sh"
+export UCI_STATE="$tmp/uci" UCI_LOG="$tmp/uci.log" UBUS_LOG="$tmp/ubus.log" \
+    WIFI_LOG="$tmp/wifi.log" HOSTAPD_RUN_DIR="$tmp/run" \
+    JSONFILTER_OUTPUT='sec0
+wlan0
+sec1
+wlan1'
+router() {
+    cat > "$UCI_STATE" <<EOF
+wireless.radio0.band 2g
+wireless.radio1.band 5g
+wireless.sec0.device radio0
+wireless.sec0.ssid home
+wireless.sec0.macfilter allow
+wireless.sec0.maclist AA-BB-CC-DD-EE-01
+wireless.sec0.maclist aa:bb:cc:dd:ee:02
+wireless.sec1.device radio1
+wireless.sec1.ssid home
+wireless.sec1.macfilter allow
+wireless.sec1.maclist AABBCCDDEE01
+EOF
+    rm -rf -- "$HOSTAPD_RUN_DIR"
+    mkdir -p "$HOSTAPD_RUN_DIR"
+    : > "$HOSTAPD_RUN_DIR/hostapd-wlan0.maclist"
+    : > "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist"
+    : > "$UCI_LOG"
+    unset UBUS_EXIT JSONFILTER_EXIT
+}
+remote() {
+    rc=0
+    # shellcheck disable=SC2086  # SH may carry options
+    $SH "$tmp/remote.sh" "$@" > "$tmp/out" 2> "$tmp/err" || rc=$?
+    out=$(cat "$tmp/out")
+    err=$(cat "$tmp/err")
+}
+
+router
+remote home dump 0 0 0 all
+check_rc 0 "dump: succeeds"
+check_in "$out" "mac${tab}sec0${tab}aa:bb:cc:dd:ee:01" \
+    "an entry stored as AA-BB-CC-DD-EE-01 is listed as aa:bb:cc:dd:ee:01"
+check_in "$out" "mac${tab}sec1${tab}aa:bb:cc:dd:ee:01" \
+    "and one stored as AABBCCDDEE01 too, so both bands show one device"
+
+router
+remote home del 1 0 0 all aa:bb:cc:dd:ee:01
+check_in "$out" "- sec0 AA-BB-CC-DD-EE-01" "del: finds an entry spelt with dashes"
+check_in "$out" "- sec1 AABBCCDDEE01" "del: and one with no separators, by its stored spelling"
+router
+remote home add 1 0 0 all aa:bb:cc:dd:ee:01
+check_eq "$out" "nothing to change" "add: a device already there in another spelling is not added twice"
+
+router
+remote home add 0 0 0 all aa:bb:cc:dd:ee:09
+check_rc 0 "add, applied: succeeds"
+check_in "$out" "committed; reloading home" "add: the BSSes carrying the SSID reloaded, not all wifi"
+check_in "$(cat "$UCI_LOG")" "add_list wireless.sec0.maclist=aa:bb:cc:dd:ee:09" "add: committed to uci"
+check_in "$(cat "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist")" "aa:bb:cc:dd:ee:09" \
+    "add: hostapd's accept-list file rewritten"
+
+router
+rm -f -- "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist"
+remote home add 0 0 0 all aa:bb:cc:dd:ee:09
+check_rc 0 "no accept-list file for one BSS: still committed"
+check_in "$out" "not applied" "no accept-list file: not applied rather than a full reload"
+check_not_in "$out" "full wifi reload" "no accept-list file: no full reload without -f"
+router
+remote home add 0 1 0 all aa:bb:cc:dd:ee:09
+check_in "$out" "committed; full wifi reload" "-f: the full reload"
+
+router
+export UBUS_EXIT=1
+remote home add 0 0 0 all aa:bb:cc:dd:ee:09
+check_rc 1 "ubus fails: exit 1"
+check_in "$err" "ubus cannot report the wireless status" "ubus fails: said so"
+check_eq "$(cat "$UCI_LOG")" "" "ubus fails: nothing committed"
+router
+export JSONFILTER_EXIT=1
+remote home clients 0 0 0 all
+check_rc 1 "jsonfilter fails: exit 1, not a report of no clients"
+check_in "$err" "jsonfilter cannot read the wireless status" "jsonfilter fails: said so"
+unset JSONFILTER_EXIT
+
 finish

@@ -1,0 +1,10 @@
+#!/bin/sh
+# ubus: "call network.wireless status" prints $UBUS_STATUS, or fails with
+# $UBUS_EXIT; every call is logged to $UBUS_LOG.
+printf '%s\n' "$*" >> "${UBUS_LOG:-/dev/null}"
+case "$*" in
+"call network.wireless status")
+    [ -z "${UBUS_EXIT-}" ] || exit "$UBUS_EXIT"
+    printf '%s\n' "${UBUS_STATUS-{\}}"
+    ;;
+esac
