@@ -96,6 +96,19 @@ unlike `-F`, which would upload `/etc/passwd` for a message starting with
 library, which would bring back the interpreter the tools avoid.
 
 
+## shrinkpdf: never worse than the input
+
+Ghostscript writes to a temporary file, and only then is the smaller of
+that and the input copied to the output, so a failed run leaves an
+existing output as it was, and a "shrunk" file larger than the original
+is never kept. The copy is `cat`, not `mv`: a new file gets the umask's
+mode rather than the temporary file's 0600, and an existing one keeps its
+own. Writing the output over the input is refused outright, symlinks
+included, because Ghostscript would read the file it is truncating.
+Ghostscript has no `--`, so an input named `-x.pdf` is passed as
+`./-x.pdf`.
+
+
 ## default-gateway: the route in use
 
 It asks the routing table the way each system answers best --

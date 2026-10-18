@@ -1,0 +1,16 @@
+#!/bin/sh
+# gs: records its arguments in $GS_ARGV, one per line, and writes
+# $GS_OUTPUT to the -sOutputFile it was given; with $GS_EXIT set it writes
+# half a file there and fails.
+printf '%s\n' "$@" > "$GS_ARGV"
+for arg; do
+    case $arg in
+    -sOutputFile=*) out=${arg#-sOutputFile=} ;;
+    esac
+done
+if [ -n "${GS_EXIT-}" ]; then
+    printf 'partial' > "$out"
+    printf 'gs: Unrecoverable error\n' >&2
+    exit "$GS_EXIT"
+fi
+printf '%s' "${GS_OUTPUT-}" > "$out"

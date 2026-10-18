@@ -28,6 +28,10 @@ and runs none of the tools; `tests` runs them all against the stand-ins.
   assignment on the command inside the function; in the tests `export`
   it and `unset` it after. A test written the other way passes for the
   wrong reason.
+- **`run` sets `rc`, `out` and `err`** in the test's own shell. A test
+  that keeps a path in `$out` has it replaced by the tool's output, and
+  writes files named after that output into the current directory --
+  the repository root, when run from there.
 - **A check that depends on the host fails on the other system** —
   whether gcc exists, which `make` is GNU. Assert what the command run
   under the tool sees, not what the tool did on the way there.

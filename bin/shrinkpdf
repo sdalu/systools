@@ -1,0 +1,122 @@
+#!/bin/sh
+# shrinkpdf — make a PDF smaller by recompressing it with Ghostscript
+# usage: shrinkpdf [-v] infile [outfile|-] [dpi]
+#
+# Images are downsampled to DPI (default 72) and fonts subset; the result
+# goes to OUTFILE, or to stdout when it is "-" or left out.  Lossy, and
+# not always smaller: when the result is larger than the input, the
+# input is passed through unchanged.  Ghostscript writes to a temporary
+# file first, so a failed run leaves OUTFILE as it was.
+# Exit status: 0 success, 1 failure, 2 usage error.
+#
+# After Alfred Klomp's shrinkpdf.sh (BSD 3-Clause),
+# http://alfredklomp.com/programming/shrinkpdf/
+# 'local' and test -ef are not POSIX, but every shell this runs under
+# has them
+# shellcheck disable=SC3043,SC3013
+set -eu
+
+prog=${0##*/}
+
+usage() {
+    cat <<EOF
+usage: $prog [-v] infile [outfile|-] [dpi]
+  outfile  where the result goes (default: stdout)
+  dpi      resolution images are downsampled to (default: 72)
+  -v       report the sizes before and after, on stderr
+  -h       show this help
+EOF
+}
+
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+    exit 1
+}
+
+info() {
+    [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+size_of() {
+    local n
+    n=$(wc -c < "$1")
+    printf '%s\n' $((n))
+}
+
+shrink() {
+    gs -q -dNOPAUSE -dBATCH -dSAFER \
+        -sDEVICE=pdfwrite \
+        -dCompatibilityLevel=1.3 \
+        -dPDFSETTINGS=/screen \
+        -dEmbedAllFonts=true \
+        -dSubsetFonts=true \
+        -dAutoRotatePages=/None \
+        -dColorImageDownsampleType=/Bicubic \
+        -dColorImageResolution="$3" \
+        -dGrayImageDownsampleType=/Bicubic \
+        -dGrayImageResolution="$3" \
+        -dMonoImageDownsampleType=/Subsample \
+        -dMonoImageResolution="$3" \
+        -sOutputFile="$2" \
+        "$1"
+}
+
+verbose=0
+while getopts vh opt; do
+    case $opt in
+    v) verbose=1 ;;
+    h) usage; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -lt 1 ] || [ "$#" -gt 3 ]; then
+    usage >&2
+    exit 2
+fi
+
+input=$1
+output=${2:--}
+# gs reads a leading - as an option, and has no -- to say otherwise.
+case $input in
+-*) input=./$input ;;
+esac
+dpi=${3:-72}
+
+case $dpi in
+'' | *[!0-9]* | 0*)
+    printf '%s: dpi must be a positive number: %s\n' "$prog" "$dpi" >&2
+    exit 2
+    ;;
+esac
+[ -f "$input" ] && [ -r "$input" ] || die "cannot read $input"
+if [ "$output" != - ] && [ -e "$output" ] && [ "$input" -ef "$output" ]; then
+    printf '%s: %s is the input file\n' "$prog" "$output" >&2
+    exit 2
+fi
+command -v gs > /dev/null 2>&1 || die "Ghostscript (gs) is required"
+
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/shrinkpdf.XXXXXX") ||
+    die "cannot create a temporary directory"
+trap 'rm -rf -- "$tmpdir"' EXIT
+trap 'exit 1' HUP INT TERM
+
+shrink "$input" "$tmpdir/out.pdf" "$dpi" || die "Ghostscript failed on $input"
+
+before=$(size_of "$input")
+after=$(size_of "$tmpdir/out.pdf")
+if [ "$after" -lt "$before" ]; then
+    result=$tmpdir/out.pdf
+    info "$before bytes -> $after bytes ($((after * 100 / before))%)"
+else
+    result=$input
+    info "$before bytes -> $after bytes: no smaller, the input is kept"
+fi
+
+# cat rather than mv: a new file gets the umask's mode, not the 0600 of
+# the temporary one, and an existing one keeps its mode and its links.
+if [ "$output" = - ]; then
+    cat -- "$result"
+else
+    cat -- "$result" > "$output"
+fi

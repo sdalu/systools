@@ -13,6 +13,7 @@ installed under a prefix; there is nothing to build.
 | `low-priority` | run a command at the lowest priority the system allows | `nice`; `idprio` (FreeBSD) or `chrt` and `ionice` (Linux), used when present and permitted |
 | `openwrt-acl` | manage the MAC accept-list of an OpenWrt SSID over ssh | `ssh` to the router; `uci`, `ubus`, `jsonfilter` and `iw` on it |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
+| `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
 | `zfs-snapshot` | take today's dated snapshot of a dataset and expire old ones; meant to run once a day | `zfs` |
@@ -52,11 +53,11 @@ make tests SH=dash              # the suite, with the scripts run under dash
 ```
 
 `make check` needs `shellcheck`. `make tests` runs every tool against
-stand-ins in `tests/fake/` for `zfs`, `curl`, `ip`, `route`, `ssh`,
-`uname` and the priority tools, so it touches no pool, no network and
-no router, and it takes the FreeBSD and the Linux branch of each tool on
-either system. Each `tests/t-*.sh` names what it checks in its header
-and prints one line per check.
+stand-ins in `tests/fake/` for `zfs`, `curl`, `gs`, `ip`, `route`,
+`ssh`, `uname` and the priority tools, so it touches no pool, no network
+and no router, and it takes the FreeBSD and the Linux branch of each
+tool on either system. Each `tests/t-*.sh` names what it checks in its
+header and prints one line per check.
 
 
 ## Known shortfalls
