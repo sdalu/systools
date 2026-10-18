@@ -57,6 +57,16 @@ run screen-mirror -n -x
 check_eq "$out" "xrandr --output DP-1 --mode 2560x1440 --scale 1x1 --pos 0x0 --primary --output eDP-1 --off" \
     "-x: the source back to its preferred mode, the targets off"
 
+# A source that lists no mode: -x has nothing to put it back to.
+probe 'eDP-1 connected primary (normal)
+DP-1 connected (normal)
+   1024x768      60.00 +'
+run screen-mirror -n -x
+check_rc 1 "-x, a source with no mode: exit 1"
+check_in "$err" "eDP-1: no usable mode" "-x, a source with no mode: said so"
+check_not_in "$out" "--mode  " "-x, a source with no mode: no empty --mode"
+
+probe "$docked"
 run screen-mirror -l
 check_rc 0 "-l: succeeds"
 check_in "$out" "DP-1       2560x1440  2560x1440  17" "-l: an output's preferred, current and mode count"

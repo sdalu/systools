@@ -225,7 +225,9 @@ main() {
     fi
 
     if [ "$undo" -ne 0 ]; then
-        set -- --output "$source" --mode "$(preferred_mode "$source")" \
+        mode=$(preferred_mode "$source")
+        [ -n "$mode" ] || die "$source: no usable mode"
+        set -- --output "$source" --mode "$mode" \
                --scale 1x1 --pos 0x0 --primary
         while IFS= read -r out; do
             [ -n "$out" ] || continue
