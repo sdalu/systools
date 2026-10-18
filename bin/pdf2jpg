@@ -28,11 +28,12 @@ usage() {
     cat <<EOF
 usage: $prog [options] file.pdf
   -w px      longest edge, in pixels (default 2000)
-  -x n       render at n times the target, then downsample (default 2)
+  -x n       render at n (1 or more) times the target, then downsample
+             (default 2)
   -f n       first page (default 1)
   -l n       last page (default the last)
   -q q       quality, or the ceiling of the -s search (default 92)
-  -s size    largest file per page, e.g. 500k or 1.5m
+  -s size    largest file per page, e.g. 500k, 500kb or 1.5m
   -o dir     directory to write to (default .)
   -p name    file name before -NN.jpg (default the PDF's)
   -n mode    page number suffix: auto (default), always, never
@@ -105,6 +106,8 @@ best_quality() {
     local low high mid best size
     low=$floor
     high=$quality
+    # -q below the floor is still the ceiling: search that one quality.
+    [ "$low" -le "$high" ] || low=$high
     best=
     while [ "$low" -le "$high" ]; do
         mid=$(((low + high) / 2))
@@ -197,8 +200,10 @@ while getopts w:x:f:l:q:s:o:p:n:e:i:gLch opt; do
     q) quality=$OPTARG ;;
     s)
         max_bytes=$(printf '%s\n' "$OPTARG" | awk '
-            match($0, /^[0-9]+(\.[0-9]+)?[ \t]*[kKmM]?/) {
-                text = substr($0, 1, RLENGTH)
+            # the whole value: 500k, 500kb, 1.5m, 2000 -- not 500kg
+            match($0, /^[0-9]+(\.[0-9]+)?[ \t]*([kKmM][bB]?)?$/) {
+                text = $0
+                sub(/[bB]$/, "", text)
                 unit = tolower(substr(text, length(text)))
                 n = text + 0
                 if (unit == "k") n *= 1024
@@ -240,9 +245,11 @@ case $quality in
 '' | *[!0-9]* | 0*) bad "-q must be a quality from 1 to 100: $quality" ;;
 esac
 [ "$quality" -le 100 ] || bad "-q must be a quality from 1 to 100: $quality"
+# Below 1 the page would be rendered smaller than -w and never scaled
+# back up, so the -w promise would be broken.
 awk -v x="$oversample" 'BEGIN {
-    exit !(x ~ /^[0-9]+(\.[0-9]+)?$/ && x + 0 > 0) }' ||
-    bad "-x must be a positive number: $oversample"
+    exit !(x ~ /^[0-9]+(\.[0-9]+)?$/ && x + 0 >= 1) }' ||
+    bad "-x must be a number, 1 or more: $oversample"
 [ -z "$icc" ] || [ "$engine" = gs ] || bad "-i needs -e gs"
 [ -f "$input" ] && [ -r "$input" ] || die "cannot read $input"
 if [ -z "$prefix" ]; then

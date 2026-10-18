@@ -116,6 +116,12 @@ p2j '596x842' -w 600 -s 4.9k
 check_in "$out" "q=50  5000 bytes" "-s 4.9k: 5018 bytes, the same quality"
 p2j '596x842' -w 600 -s 5000 -q 40
 check_in "$out" "q=40  4000 bytes" "-q caps the search"
+p2j '596x842' -w 600 -s 900 -q 8
+check_in "$out" "q=8  800 bytes" "-q below the search floor is still the ceiling"
+p2j '596x842' -w 600 -s 5kb
+check_in "$out" "q=51  5100 bytes" "-s 5kb: kb is a unit, as 500kb in the Ruby version's help was"
+p2j '596x842' -w 600 -x 1.0
+check_in "$out" "424x600 px" "-x 1.0: rendered at the target, not resampled"
 p2j '596x842' -w 600 -s 1000
 check_rc 3 "-s 1000, unreachable: exit 3"
 check_in "$out" "q=15  1500 bytes" "-s unreachable: written at the floor"
@@ -174,8 +180,9 @@ unset PDFTOPPM_FAIL
 check_rc 1 "pdftoppm fails: exit 1"
 check_in "$err" "probe failed" "pdftoppm fails: said so"
 
-for args in '-w 0' '-w x' '-q 0' '-q 101' '-x 0' '-x abc' '-s abc' \
-    '-n sometimes' '-e cairo' '-i my.icc' '-f 0' '-z'; do
+for args in '-w 0' '-w x' '-q 0' '-q 101' '-x 0' '-x abc' '-x 0.5' \
+    '-s abc' '-s 500kg' '-s 1.5mx' '-n sometimes' '-e cairo' '-i my.icc' \
+    '-f 0' '-z'; do
     # shellcheck disable=SC2086  # each case is a word list
     p2j "$three" $args
     check_rc 2 "refuses [$args] as a usage error"
