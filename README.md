@@ -20,11 +20,11 @@ installed under a prefix; there is nothing to build.
 | `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
 | `screen-extend` | lay an external X11 output out as the primary, the internal panel below, above, beside it or off; the panel alone when undocked | `xrandr` |
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
-| `shrinkpdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
+| `shrink-pdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `term-title` | set the terminal's window title or icon name (the window name under screen and tmux), or run a command under its own title and restore the old one | a terminal that speaks xterm's title sequences, or screen or tmux |
 | `transcribe` | transcribe audio with Whisper on OVHcloud AI Endpoints, announcing the duration and cost first | `curl`; `ffmpeg` and `ffprobe` to resample and measure, when present |
 | `vocalise` | speak text: OVHcloud's Riva voices, or piper and espeak-ng locally, to a file or to the speakers | `curl` for Riva; `piper` or `espeak-ng` offline; `ffmpeg` (or `lame`, `oggenc`, `opusenc`, `flac`) for anything but WAV |
-| `vorbisedit` | edit the comments of an Ogg Vorbis file in `$VISUAL`, written back only when changed | `vorbiscomment` (vorbis-tools) |
+| `vorbis-edit` | edit the comments of an Ogg Vorbis file in `$VISUAL`, written back only when changed | `vorbiscomment` (vorbis-tools) |
 | `vpn-status` | list the VPN tunnels that are up, one word each, marking a WireGuard tunnel that no longer answers; `-p` for polybar | `ifconfig` (FreeBSD) or sysfs (Linux), `wg` for WireGuard |
 | `where-am-i` | name the place this machine is at -- home, work, whatever the configuration says -- from the SSID of the Wi-Fi it is associated with; `unknown` otherwise | `ifconfig` (FreeBSD); `iw`, else `wpa_cli` (Linux) |
 | `with-gnu-make` | run a command with GNU make exposed as `make`, and `cc` as `gcc` where there is none | `gmake` |
@@ -121,7 +121,7 @@ line per check.
   HTTP 400, though it advertises them.
 - `pushover` reads only the two-level layout of `~/.pushover` its header
   shows, and accepts only tokens made of letters and digits.
-- `vorbisedit` edits Ogg Vorbis only; an Opus file's tags need
+- `vorbis-edit` edits Ogg Vorbis only; an Opus file's tags need
   `opustags`.
 - The suite runs `openwrt-acl`'s router half against stand-ins, not on
   OpenWrt, and covers neither `with-gnu-make`'s `gcc` shim nor `qr`

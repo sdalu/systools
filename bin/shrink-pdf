@@ -1,6 +1,6 @@
 #!/bin/sh
-# shrinkpdf — make a PDF smaller by recompressing it with Ghostscript
-# usage: shrinkpdf [-v] infile [outfile|-] [dpi]
+# shrink-pdf — make a PDF smaller by recompressing it with Ghostscript
+# usage: shrink-pdf [-v] infile [outfile|-] [dpi]
 #
 # Images are downsampled to DPI (default 72) and fonts subset; the result
 # goes to OUTFILE, or to stdout when it is "-" or left out.  Lossy, and
@@ -96,7 +96,7 @@ if [ "$output" != - ] && [ -e "$output" ] && [ "$input" -ef "$output" ]; then
 fi
 command -v gs > /dev/null 2>&1 || die "Ghostscript (gs) is required"
 
-tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/shrinkpdf.XXXXXX") ||
+tmpdir=$(mktemp -d "${TMPDIR:-/tmp}/shrink-pdf.XXXXXX") ||
     die "cannot create a temporary directory"
 trap 'rm -rf -- "$tmpdir"' EXIT
 trap 'exit 1' HUP INT TERM

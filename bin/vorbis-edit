@@ -1,6 +1,6 @@
 #!/bin/sh
-# vorbisedit — edit the comments (tags) of an Ogg Vorbis file in an editor
-# usage: vorbisedit file.ogg
+# vorbis-edit — edit the comments (tags) of an Ogg Vorbis file in an editor
+# usage: vorbis-edit file.ogg
 #
 # The comments are listed one NAME=value per line into a temporary file
 # opened in $VISUAL, else $EDITOR, else vi, and written back, replacing
@@ -44,7 +44,7 @@ file=$1
 command -v vorbiscomment > /dev/null 2>&1 ||
     die "vorbiscomment is not installed"
 
-tmp=$(mktemp "${TMPDIR:-/tmp}/vorbisedit.XXXXXX") ||
+tmp=$(mktemp "${TMPDIR:-/tmp}/vorbis-edit.XXXXXX") ||
     die "cannot make a temporary file"
 keep=
 trap '[ -n "$keep" ] || rm -f -- "$tmp" "$tmp.orig"' EXIT

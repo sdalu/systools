@@ -164,7 +164,7 @@ dark. Positions are worked out and given explicitly rather than with
 output was left in.
 
 
-## shrinkpdf: never worse than the input
+## shrink-pdf: never worse than the input
 
 Ghostscript writes to a temporary file, and only then is the smaller of
 that and the input copied to the output, so a failed run leaves an
@@ -210,7 +210,7 @@ capture that fails -- an area selection cancelled -- removes the file
 maim may have left, so a failure never leaves an empty PNG behind.
 
 
-## vorbisedit: write back only an edit that was made
+## vorbis-edit: write back only an edit that was made
 
 The comments are written back only when the editor exits 0 and the file
 differs from what was listed: `vorbiscomment -w` rewrites the whole Ogg

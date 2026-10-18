@@ -1,5 +1,5 @@
 #!/bin/sh
-# edit-tags: an editor for the vorbisedit tests, never called by a tool
+# edit-tags: an editor for the vorbis-edit tests, never called by a tool
 # itself.  Logs its arguments to $EDIT_LOG, applies the sed script
 # $EDIT_SED to the file it is given in place, then exits with $EDIT_RC.
 printf '%s\n' "$*" >> "${EDIT_LOG:-/dev/null}"
