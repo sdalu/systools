@@ -1,0 +1,101 @@
+#!/bin/sh
+# with-gnu-make — run a command with GNU make exposed as `make`
+# usage: with-gnu-make command [arg...]
+#        with-gnu-make uv pip install lupa
+#        with-gnu-make uvx --from openhands-agent-server==1.44.0 agent-server
+#
+# Python sdists that compile a bundled C library (lupa/LuaJIT, and friends)
+# invoke `make` and `gcc` by those names.  On FreeBSD `make` is bmake, which
+# cannot parse a GNU makefile, and there is no `gcc` at all, so the nested
+# build fails — usually with a warning rather than an error, and the real
+# breakage surfaces later as a missing .a or .o file.  This wrapper puts a
+# shim directory first on PATH (make -> gmake, gcc -> cc) and execs the
+# given command, so any build it spawns picks up the shims.
+#
+# Shims are only created where they are needed: on a GNU/Linux userland
+# where `make` is already GNU make and `gcc` exists, the command is exec'd
+# unchanged.
+set -eu
+
+: "${GNU_MAKE:=gmake}"
+: "${SHIM_CC:=cc}"
+: "${SHIM_DIR:=${XDG_CACHE_HOME:-$HOME/.cache}/with-gnu-make/bin}"
+
+usage() {
+    printf 'usage: %s command [arg...]\n' "${0##*/}"
+    printf '  runs command with gmake shimmed in as make\n'
+    printf '  env: GNU_MAKE=%s SHIM_CC=%s SHIM_DIR=%s\n' \
+        "$GNU_MAKE" "$SHIM_CC" "$SHIM_DIR"
+}
+
+err() {
+    printf '%s: %s\n' "${0##*/}" "$1" >&2
+    exit 1
+}
+
+# GNU make understands `--version`; bmake rejects it.
+is_gnu_make() {
+    "$1" --version 2>/dev/null | head -n 1 | grep -q 'GNU Make'
+}
+
+# write_shim name target — a #!/bin/sh trampoline execing an absolute path.
+# shellcheck disable=SC3043  # `local` is supported by every shell we target
+write_shim() {
+    local name target tmp
+    name=$1
+    target=$2
+    case "$target" in
+        *\'*) err "refusing to shim a path containing a quote: $target" ;;
+        "$SHIM_DIR"/*) err "shim target is itself a shim: $target" ;;
+    esac
+    tmp=$(mktemp -- "$SHIM_DIR/.$name.XXXXXX")
+    printf '#!/bin/sh\nexec '\''%s'\'' "$@"\n' "$target" > "$tmp"
+    chmod 755 "$tmp"
+    # mv is atomic: a concurrent run never sees a half-written shim.
+    mv -f -- "$tmp" "$SHIM_DIR/$name"
+}
+
+[ $# -gt 0 ] || { usage >&2; exit 2; }
+case "$1" in
+    -h|--help) usage; exit 0 ;;
+esac
+
+need_make=yes
+need_gcc=yes
+make_path=$(command -v -- make 2>/dev/null) || make_path=
+if [ -n "$make_path" ] && is_gnu_make "$make_path"; then
+    need_make=no
+fi
+if command -v -- gcc >/dev/null 2>&1; then
+    need_gcc=no
+fi
+
+if [ "$need_make" = no ] && [ "$need_gcc" = no ]; then
+    exec "$@"
+fi
+
+mkdir -p -- "$SHIM_DIR"
+
+if [ "$need_make" = yes ]; then
+    gmake_path=$(command -v -- "$GNU_MAKE" 2>/dev/null) || gmake_path=
+    [ -n "$gmake_path" ] ||
+        err "GNU make not found as '$GNU_MAKE' (pkg install gmake)"
+    is_gnu_make "$gmake_path" ||
+        err "'$gmake_path' is not GNU make"
+    write_shim make "$gmake_path"
+else
+    # A shim left by an earlier run would shadow a now-usable make.
+    rm -f -- "$SHIM_DIR/make"
+fi
+
+if [ "$need_gcc" = yes ]; then
+    cc_path=$(command -v -- "$SHIM_CC" 2>/dev/null) || cc_path=
+    [ -n "$cc_path" ] || err "no C compiler found as '$SHIM_CC'"
+    write_shim gcc "$cc_path"
+else
+    rm -f -- "$SHIM_DIR/gcc"
+fi
+
+PATH=$SHIM_DIR:$PATH
+export PATH
+exec "$@"
