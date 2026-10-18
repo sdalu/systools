@@ -1,0 +1,424 @@
+#!/bin/sh
+# openwrt-acl — manage the MAC accept-list of an OpenWrt SSID over ssh
+# usage: openwrt-acl [-H host] [-s ssid] [-b band] [-n] [-f|-l] <cmd> [dev...]
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
+
+: "${OPENWRT_ACL_HOST:=maxwell}"
+: "${OPENWRT_ACL_SSID:=rezo_zero}"
+
+progname=${0##*/}
+readonly progname
+
+die() {
+    printf '%s: %s\n' "$progname" "$*" >&2
+    exit 1
+}
+
+usage() {
+    cat <<'EOF'
+usage: openwrt-acl [-H host] [-s ssid] [-b band] [-n] [-f|-l] <cmd> [dev...]
+
+commands:
+  list            show the accept-list of every radio carrying the SSID
+  clients         show associated stations, per radio
+  add mac|name... add devices to every radio carrying the SSID
+  del mac|name... remove devices from every radio carrying the SSID
+
+options:
+  -H host         ssh destination            (default: maxwell)
+  -s ssid         SSID to act on             (default: rezo_zero)
+  -b band         act on one band only: 2.4, 5, 6   (default: all)
+  -n              dry run: show the plan, change nothing
+  -l              commit to uci but do not apply; the change takes
+                  effect at the next reload, disturbing nobody now
+  -f              apply with a full `wifi reload` rather than reloading
+                  only the BSSes carrying the SSID
+
+A device is named by its MAC, as aa:bb:cc:dd:ee:ff, AA-BB-CC-DD-EE-FF or
+aabbccddeeff, or by a name from /etc/ethers on the router, which is also
+where list and clients get the names they show.
+
+The radios carrying an SSID keep separate accept-lists, and the difference
+between them is meaningful: a device absent from the 5 GHz list is confined
+to 2.4 GHz.  Add and del therefore act on every band unless -b says which.
+
+uci is the source of truth; the change is committed there first.  Applying
+it costs a reassociation: hostapd reads its accept-list only when its
+config loads, so the BSSes carrying the SSID are reloaded, and their
+clients reconnect within a few seconds.  Other SSIDs on the same radio are
+left alone unless -f is given.  Installing hostapd-utils on the router
+would allow a genuinely live update (hostapd_cli accept_acl add_mac).
+EOF
+}
+
+# canonical lowercase colon form, or failure if it is not a MAC
+normalise_mac() {
+    local mac
+    mac=$(printf '%s' "$1" | tr -d ':.-' | awk '{ print tolower($0) }')
+    case "$mac" in
+        *[!0-9a-f]*) return 1 ;;
+    esac
+    [ ${#mac} -eq 12 ] || return 1
+    printf '%s' "$mac" | sed 's/../&:/g; s/:$//'
+}
+
+# quote arguments for the remote shell: ssh concatenates them anyway
+shquote() {
+    local arg
+    for arg do
+        printf "'%s' " "$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")"
+    done
+}
+
+# run the remote helper; it emits tab-separated records on stdout
+remote() {
+    # shellcheck disable=SC2029  # arguments are expanded here on purpose
+    ssh -x "$host" "sh -s -- $(shquote "$@")" <<'REMOTE'
+set -eu
+
+ssid=$1
+verb=$2
+dry=$3
+full=$4
+defer=$5
+band=$6
+shift 6
+
+tab=$(printf '\t')
+
+sections=$(uci show wireless |
+    sed -n "s/^wireless\.\([^.]*\)\.ssid='$ssid'\$/\1/p")
+[ -n "$sections" ] ||
+    { printf 'no wifi-iface has ssid %s\n' "$ssid" >&2; exit 1; }
+
+# a radio's band, from the most reliable source it declares
+band_of() {
+    dev=$(uci -q get "wireless.$1.device" || printf '')
+    if [ -n "$dev" ]; then
+        case "$(uci -q get "wireless.$dev.band" || printf '')" in
+            2g) printf '2.4'; return 0 ;;
+            5g) printf '5';   return 0 ;;
+            6g) printf '6';   return 0 ;;
+        esac
+        case "$(uci -q get "wireless.$dev.hwmode" || printf '')" in
+            11a)      printf '5';   return 0 ;;
+            11b | 11g) printf '2.4'; return 0 ;;
+        esac
+        ch=$(uci -q get "wireless.$dev.channel" || printf '')
+        case "$ch" in
+            '' | *[!0-9]*) ;;
+            *) if [ "$ch" -le 14 ]; then printf '2.4'; else printf '5'; fi
+               return 0 ;;
+        esac
+    fi
+    printf '?'
+}
+
+if [ "$band" != all ]; then
+    kept=''
+    for s in $sections; do
+        [ "$(band_of "$s")" = "$band" ] || continue
+        kept="$kept $s"
+    done
+    [ -n "$kept" ] ||
+        { printf 'no %s GHz radio carries ssid %s\n' "$band" "$ssid" >&2
+          exit 1; }
+    sections=$kept
+fi
+
+ifmap=$(ubus call network.wireless status |
+    jsonfilter -e '@[*].interfaces[*]["section","ifname"]' |
+    awk 'NR % 2 { s = $0; next } { print s, $0 }')
+
+ifname_of() {
+    printf '%s\n' "$ifmap" | awk -v s="$1" '$1 == s { print $2; exit }'
+}
+
+# accept-list entries as stored: uci prints a list space-separated
+raw_list() {
+    uci -q get "wireless.$1.maclist" | tr ' ' '\n' | sed '/^$/d'
+}
+
+emit_ifaces() {
+    for s in $sections; do
+        printf 'iface\t%s\t%s\t%s\t%s\n' "$s" "$(ifname_of "$s")" \
+            "$(uci -q get "wireless.$s.macfilter" || printf none)" \
+            "$(band_of "$s")"
+    done
+}
+
+# /etc/ethers is the house name registry; dnsmasq reads it too
+emit_names() {
+    [ -f /etc/ethers ] || return 0
+    awk '$0 !~ /^[ \t]*#/ && NF >= 2 { print "name\t" tolower($1) "\t" $2 }' \
+        /etc/ethers
+}
+
+# an argument is either a MAC already, or a name to look up in /etc/ethers
+resolve() {
+    case "$1" in
+        ??:??:??:??:??:??) printf '%s\n' "$1"; return 0 ;;
+    esac
+    found=$(awk -v n="$1" \
+        '$0 !~ /^[ \t]*#/ && NF >= 2 && $2 == n { print tolower($1); exit }' \
+        /etc/ethers 2>/dev/null)
+    if [ -z "$found" ]; then
+        printf 'no such name in /etc/ethers: %s\n' "$1" >&2
+        return 1
+    fi
+    printf '%s\n' "$found"
+}
+
+emit_macs() {
+    for s in $sections; do
+        raw_list "$s" | awk '{ print tolower($0) }' | sort -u |
+            awk -v s="$s" '{ print "mac\t" s "\t" $0 }'
+    done
+}
+
+case "$verb" in
+dump)
+    emit_ifaces
+    emit_names
+    emit_macs
+    ;;
+clients)
+    emit_ifaces
+    emit_names
+    emit_macs
+    for s in $sections; do
+        i=$(ifname_of "$s")
+        [ -n "$i" ] || continue
+        iw dev "$i" station dump |
+            awk -v s="$s" '/^Station/ { print "client\t" s "\t" tolower($2) }'
+    done
+    ;;
+add | del)
+    targets=''
+    for a in "$@"; do
+        r=$(resolve "$a") || exit 1
+        targets="$targets$r
+"
+    done
+
+    # a plan of uci list operations, so a dry run can show it verbatim;
+    # deletions carry the stored spelling, since del_list matches exactly
+    plan=$(
+        for s in $sections; do
+            cur=$(raw_list "$s")
+            for m in $targets; do
+                match=$(printf '%s\n' "$cur" |
+                    awk -v m="$m" 'tolower($0) == m')
+                if [ "$verb" = del ]; then
+                    for e in $match; do
+                        printf 'del\t%s\t%s\n' "$s" "$e"
+                    done
+                elif [ -z "$match" ] && [ "$verb" = add ]; then
+                    printf 'add\t%s\t%s\n' "$s" "$m"
+                fi
+            done
+        done | sort -u
+    )
+
+    if [ -z "$plan" ]; then
+        printf 'nothing to change\n'
+        exit 0
+    fi
+
+    printf '%s\n' "$plan" |
+        awk -F'\t' '{ print ($1 == "add" ? "+" : "-"), $2, $3 }'
+
+    if [ "$dry" != 0 ]; then
+        printf 'dry run: nothing applied\n'
+        exit 0
+    fi
+
+    printf '%s\n' "$plan" | while IFS="$tab" read -r op s m; do
+        case "$op" in
+            add) uci add_list "wireless.$s.maclist=$m" ;;
+            del) uci del_list "wireless.$s.maclist=$m" ;;
+        esac
+    done
+    uci commit wireless
+
+    # applying means bouncing the BSSes carrying the SSID: hostapd reads
+    # its accept-list only at config load, and its reload restarts the
+    # BSS.  Per-BSS leaves the radio's other SSIDs alone; a full wifi
+    # reload does not.  Clients reassociate by themselves within seconds.
+    if [ "$defer" != 0 ]; then
+        printf 'committed; not applied, takes effect on the next reload\n'
+        exit 0
+    fi
+
+    live=0
+    if [ "$full" = 0 ]; then
+        live=1
+        for s in $sections; do
+            i=$(ifname_of "$s")
+            [ -n "$i" ] && [ -f "/var/run/hostapd-$i.maclist" ] || live=0
+        done
+    fi
+
+    if [ "$live" = 1 ]; then
+        for s in $sections; do
+            i=$(ifname_of "$s")
+            f=/var/run/hostapd-$i.maclist
+            raw_list "$s" > "$f.new"
+            mv "$f.new" "$f"
+        done
+        ifaces=$(for s in $sections; do ifname_of "$s"; done)
+        # detached, so this ssh survives a bounce of the link it rides
+        (
+            sleep 2
+            for i in $ifaces; do
+                ubus call "hostapd.$i" reload
+            done
+        ) >/dev/null 2>&1 </dev/null &
+        printf 'committed; reloading %s, its clients reassociate\n' "$ssid"
+    else
+        (sleep 2; wifi reload) >/dev/null 2>&1 </dev/null &
+        printf 'committed; full wifi reload, every client reassociates\n'
+    fi
+    ;;
+*)
+    printf 'unknown verb %s\n' "$verb" >&2
+    exit 2
+    ;;
+esac
+REMOTE
+}
+
+report() {
+    awk -F'\t' -v host="$host" -v ssid="$ssid" -v mode="$1" '
+    function label(m) {
+        return (m in nm) ? nm[m] : "?"
+    }
+    $1 == "iface" {
+        nsec++
+        sec[nsec] = $2
+        ifn[nsec] = $3
+        filt[nsec] = $4
+        bnd[nsec] = ($5 == "?" || $5 == "" ? $3 : $5 "GHz")
+        next
+    }
+    $1 == "name" {
+        nm[$2] = $3
+        next
+    }
+    $1 == "mac" {
+        seen[$3] = 1
+        have[$2 "/" $3] = 1
+        count[$2]++
+        next
+    }
+    $1 == "client" {
+        assoc[$2 "/" $3] = 1
+        next
+    }
+    END {
+        printf "%s on %s\n\n", ssid, host
+        for (i = 1; i <= nsec; i++)
+            printf "  %-16s %-10s %-7s macfilter=%-6s %d entries\n",
+                sec[i], ifn[i], bnd[i], filt[i], count[sec[i]]
+
+        if (mode == "clients") {
+            for (i = 1; i <= nsec; i++) {
+                printf "\n  associated on %s (%s):\n", ifn[i], bnd[i]
+                n = 0
+                for (m in seen)
+                    if (assoc[sec[i] "/" m]) {
+                        printf "    %-19s %s\n", m, label(m) | "sort -k2"
+                        n++
+                    }
+                close("sort -k2")
+                if (n == 0) print "    (none)"
+            }
+            exit
+        }
+
+        printf "\n  %-19s %-24s", "MAC", "NAME"
+        for (i = 1; i <= nsec; i++) printf "%-9s", bnd[i]
+        printf "\n"
+        for (m in seen) {
+            line = sprintf("  %-19s %-24s", m, label(m))
+            miss = 0
+            for (i = 1; i <= nsec; i++)
+                if (have[sec[i] "/" m]) line = line sprintf("%-9s", "yes")
+                else { line = line sprintf("%-9s", "-"); miss = 1 }
+            if (miss) line = line " confined"
+            print line | "sort -k2"
+        }
+        close("sort -k2")
+    }'
+}
+
+host=$OPENWRT_ACL_HOST
+ssid=$OPENWRT_ACL_SSID
+dry=0
+full=0
+defer=0
+band=all
+
+while getopts 'H:s:b:nflh' opt; do
+    case "$opt" in
+        H) host=$OPTARG ;;
+        s) ssid=$OPTARG ;;
+        b) band=$OPTARG ;;
+        n) dry=1 ;;
+        f) full=1 ;;
+        l) defer=1 ;;
+        h) usage; exit 0 ;;
+        *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+case "$band" in
+    all | 2.4 | 5 | 6) ;;
+    2.4GHz | 2g) band=2.4 ;;
+    5GHz | 5g) band=5 ;;
+    *) die "-b takes 2.4, 5, 6 or all, not: $band" ;;
+esac
+
+[ $# -ge 1 ] || { usage >&2; exit 2; }
+cmd=$1
+shift
+
+macs=''
+case "$cmd" in
+    add | del)
+        [ $# -ge 1 ] || die "$cmd needs at least one MAC address"
+        for arg do
+            # a name is resolved against /etc/ethers on the router
+            if mac=$(normalise_mac "$arg"); then
+                macs="$macs $mac"
+            else
+                case "$arg" in
+                    *[!A-Za-z0-9_.-]* | '')
+                        die "neither a MAC address nor a name: $arg" ;;
+                esac
+                macs="$macs $arg"
+            fi
+        done
+        ;;
+    list | clients)
+        [ $# -eq 0 ] || die "$cmd takes no arguments"
+        ;;
+    *)
+        die "unknown command: $cmd (try -h)"
+        ;;
+esac
+
+case "$cmd" in
+    list)    remote "$ssid" dump "$dry" "$full" "$defer" "$band" | report list ;;
+    clients) remote "$ssid" clients "$dry" "$full" "$defer" "$band" | report clients ;;
+    *)
+        [ "$full" = 0 ] ||
+            printf '%s: a full wifi reload drops every client\n' \
+                "$progname" >&2
+        # shellcheck disable=SC2086  # macs is a validated whitespace list
+        remote "$ssid" "$cmd" "$dry" "$full" "$defer" "$band" $macs
+        ;;
+esac
