@@ -1,7 +1,6 @@
 # Design
 
-Why systools is shaped the way it is. What was tried and abandoned is in
-`HISTORY.md`.
+Why systools is shaped the way it is.
 
 
 ## POSIX sh, and nothing to install first
@@ -15,19 +14,18 @@ work on the tree. A script that ever needs shared code would find it at
 `bin/../lib/systools/`, a layout `make install` reproduces under the
 prefix; none does today.
 
-Ruby was the alternative, and the reason it is not used is in the
-history: an interpreter and gems on every host. `caldav` and `carddav`
-are the exception, by the user's decision: they were Ruby clients of
-2000 lines between them, whose job -- WebDAV's XML, iCalendar and vCard
-folded lines and escapes, DNS SRV discovery, an `$EDITOR` round trip
-with conditional writes -- wants a parser and an HTTP client that sh
-does not have, and which change events and mail invitations, so a
-rewrite would have risked working tools for no gain to the user. They
-came over as they were, given `#!/usr/bin/env ruby` for Linux, the
-exit statuses the other tools use (they had usage errors on 1 and
-failures on 2), and `carddav` the network errors `caldav` already
-caught. They run only where a calendar is used, a desktop, not on
-every host the sh tools serve.
+Ruby was the alternative, and is not used: it would need an interpreter
+and gems on every host. `caldav` and `carddav` are the exception, by the
+user's decision: they were Ruby clients of 2000 lines between them,
+whose job -- WebDAV's XML, iCalendar and vCard folded lines and escapes,
+DNS SRV discovery, an `$EDITOR` round trip with conditional writes --
+wants a parser and an HTTP client that sh does not have, and which
+change events and mail invitations, so a rewrite would have risked
+working tools for no gain to the user. They came over as they were,
+given `#!/usr/bin/env ruby` for Linux, the exit statuses the other tools
+use (they had usage errors on 1 and failures on 2), and `carddav` the
+network errors `caldav` already caught. They run only where a calendar
+is used, a desktop, not on every host the sh tools serve.
 
 
 ## Portability rules the scripts keep

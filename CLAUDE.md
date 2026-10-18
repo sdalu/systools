@@ -6,7 +6,6 @@ Small system tools in POSIX sh, for FreeBSD and Linux.
 
 - `README.md` — the tools, what each needs, installing, known shortfalls
 - `DESIGN.md` — why they are shaped so
-- `HISTORY.md` — what was tried and abandoned
 - `CHECKLIST.md` — what has to be true before a round here is done
 - `bin/` — the tools; each one's header comment is a summary of it
 - `man/` — one mdoc page per tool, the full reference; `make check`

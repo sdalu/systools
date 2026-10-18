@@ -40,8 +40,6 @@ this morning is a claim, not a fact.
       new one there?
 - [ ] `DESIGN.md` -- did this round take a decision? Write it down,
       with the alternative it rejected and why, in the same commit.
-- [ ] `HISTORY.md` -- did this round abandon an approach (add it, with
-      what settled it), or remove what an entry explains (delete it)?
 - [ ] `CLAUDE.md` -- only where things are, and a trap that cost this
       round time. Would the README or the code have answered it? Then it
       does not go there.
