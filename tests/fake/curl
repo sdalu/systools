@@ -1,9 +1,11 @@
 #!/bin/sh
 # curl: records its arguments in $CURL_ARGV, one per line; with -K - its
 # stdin in $CURL_STDIN, with -K FILE a copy of that file in $CURL_CONFIG.
-# It answers $CURL_BODY with status $CURL_CODE (200): with -o, the body
-# into that file and the status alone on stdout, else both on stdout.
-# $CURL_EXIT makes it fail as curl does.
+# It answers $CURL_BODY with status $CURL_CODE (200), as curl does: the
+# body to the -o file, or to stdout without -o; then, with -w, the -w
+# format, its \n a newline and %{http_code} the status.  With -f a status
+# of 400 or more writes no body and exits 22.  $CURL_EXIT makes it fail
+# as curl does when it cannot connect.
 #
 # With $CURL_RIVA set it plays Riva's synthesis endpoint instead: each
 # request (--data-binary @FILE) is appended to $CURL_REQUESTS, and
@@ -14,12 +16,18 @@ printf '%s\n' "$@" > "$CURL_ARGV"
 out=''
 cfg=''
 data=''
+wfmt=''
+fail=0
 prev=''
 for arg; do
     case $prev in
     -o) out=$arg ;;
     -K) cfg=$arg ;;
+    -w) wfmt=$arg ;;
     --data-binary) data=${arg#@} ;;
+    esac
+    case $arg in
+    -f | -f?* | -[!-]*f*) [ "$prev" = -w ] || fail=1 ;;
     esac
     prev=$arg
 done
@@ -47,9 +55,16 @@ if [ -n "${CURL_RIVA-}" ] && [ -n "$data" ]; then
             "$(printf '%s' "$text" | sed 's/./x/g')")
     fi
 fi
+if [ "$fail" -eq 1 ] && [ "$code" -ge 400 ]; then
+    printf 'curl: (22) The requested URL returned error: %s\n' "$code" >&2
+    exit 22
+fi
 if [ -n "$out" ]; then
     printf '%s' "$body" > "$out"
-    printf '%s' "$code"
 else
-    printf '%s\n%s' "$body" "$code"
+    printf '%s' "$body"
+fi
+if [ -n "$wfmt" ]; then
+    printf '%s' "$wfmt" | sed "s/%{http_code}/$code/g" | awk '
+        { gsub(/\\n/, "\n"); printf "%s%s", sep, $0; sep = "\n" }'
 fi
