@@ -282,6 +282,21 @@ the same way, and the table pads a UTF-8 name by its characters, its
 continuation bytes discounted.
 
 
+## The FreeBSD port: in the tree, a snapshot, and few dependencies
+
+The port lives in `ports/sysutils/systools`, as `optique` keeps its own,
+so that its plist changes with the tools; `make check` holds it to
+`bin/` and `man/`, since `check-plist` runs only in a port build, which
+nobody does on every change. With no releases to fetch, it pins one
+pushed commit of `main` and takes that commit's date as its version.
+It declares no dependency for the sh tools: they need only what their
+own job is about and say so when it is missing, so a package that
+pulled in everything any tool can use -- X11, Ghostscript, ffmpeg --
+would install a desktop on a file server. The Ruby tools are the
+exception, behind the DAV option, because without Ruby and nokogiri
+they cannot start at all.
+
+
 ## caldav and carddav: tested against a server of the suite's own
 
 They talk HTTP through Ruby's own client, not through `curl`, so no

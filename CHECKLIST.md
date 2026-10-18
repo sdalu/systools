@@ -50,6 +50,10 @@ this morning is a claim, not a fact.
 systools names no release of its own: there is no tag and no project
 version.
 
+- [ ] Should the FreeBSD port follow this round? Then push, point its
+      `GH_TAGNAME` and `DISTVERSION` at the pushed commit, and run
+      `make makesum` and the checks of `ports/README.md`. Its plist is
+      held to `bin/` and `man/` by `make check` either way.
 - [ ] Does a script's own number move? `pushover`, `zfs-snapshot` and
       `zfs-prune-snapshots` print one with `-V`, held in their
       `readonly version=` line and nowhere else. A behaviour change to

@@ -22,8 +22,8 @@ SHELLCHECK?= shellcheck
 MANDOC    ?= mandoc
 RUBY      ?= ruby
 
-.PHONY: help check check-syntax check-lint check-shared check-man tests \
-	install uninstall install-links uninstall-links
+.PHONY: help check check-syntax check-lint check-shared check-man check-port \
+	tests install uninstall install-links uninstall-links
 
 # First target, so a bare `make` runs it. .DEFAULT_GOAL and .MAIN would
 # each say so in one make only; being first says it in both.
@@ -54,7 +54,7 @@ help:						## show this help (the default)
 	@echo ''
 	@echo 'There is no build target: the scripts run from bin/ as they are.'
 
-check: check-syntax check-lint check-shared check-man	## preflight: every script parses, lints clean, shares one copy, has its page
+check: check-syntax check-lint check-shared check-man check-port	## preflight: every script parses, lints clean, shares one copy, has its page, is in the port
 # The Ruby tools (caldav, carddav) are told apart by their shebang: they
 # are parsed by $(RUBY) -wc, a warning counting as a failure, and left
 # out of shellcheck.  Without ruby they are skipped, and make says so.
@@ -89,6 +89,9 @@ check-man:					## every tool has a man page, well-formed mdoc offering exactly i
 	    { echo 'make: $(MANDOC) not found (in FreeBSD base; apt install mandoc)' >&2; \
 	      exit 1; }
 	@MANDOC='$(MANDOC)' sh tests/check-man.sh
+
+check-port:					## the FreeBSD port (ports/sysutils/systools) installs every tool and page
+	@sh tests/check-port.sh
 
 tests:						## run the suite: every script, against stand-ins, under SH
 	@SH='$(SH)' sh tests/run.sh

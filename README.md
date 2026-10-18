@@ -64,6 +64,11 @@ make uninstall                  # or uninstall-links
 (`MANDIR`); `install-links` symlinks them there too, so `man` finds
 the pages beside `~/bin`.
 
+On FreeBSD there is a port, `ports/sysutils/systools`, kept in this
+tree: `make -C ports/sysutils/systools install clean` builds the package
+from a snapshot of `main` on GitHub. `ports/README.md` says how to use
+it as an overlay and how to move it to a newer commit.
+
 Beyond `sh`, `awk`, `sed` and the usual utilities -- any POSIX awk will
 do: FreeBSD's, gawk, mawk -- a tool needs only what its row above names.
 

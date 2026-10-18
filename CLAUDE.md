@@ -10,6 +10,8 @@ Small system tools in POSIX sh, for FreeBSD and Linux.
 - `bin/` — the tools; each one's header comment is a summary of it
 - `man/` — one mdoc page per tool, the full reference; `make check`
   lints them and holds each page's options to its tool's `getopts`
+- `ports/` — the FreeBSD port, `sysutils/systools`, a snapshot of one
+  pushed commit; `ports/README.md` says how to move it on
 - `tests/` — the suite: `tests/lib.sh` (helpers), `tests/run.sh`, one
   `t-*.sh` per tool, stand-ins for external tools in `tests/fake/`,
   recorded real output in `tests/data/`, and `tests/dav-server.rb`, the

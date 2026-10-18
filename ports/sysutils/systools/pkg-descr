@@ -1,0 +1,10 @@
+systools is a set of small command-line tools, written in POSIX sh and
+behaving the same on FreeBSD and Linux: ZFS snapshot rotation, the
+default gateway, a laptop's dock, VPN tunnel status for a status bar,
+the place a machine is at from its Wi-Fi, X11 screen layout, screenshots,
+PDF shrinking and rasterising, QR codes, Pushover notifications, speech
+synthesis and transcription, Mullvad relay selection, and more. Each
+tool needs only what its own job is about, and has a manual page.
+
+The DAV option adds caldav and carddav, CalDAV and CardDAV clients
+written in Ruby.
