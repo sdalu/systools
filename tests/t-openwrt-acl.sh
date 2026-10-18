@@ -1,7 +1,7 @@
 #!/bin/sh
-# openwrt-acl, the local half: what it sends the router, the table it
-# makes of the router's answer, and what it refuses before calling ssh.
-# The remote half runs on OpenWrt and is not exercised here.
+# openwrt-acl: what the local half sends the router, the table it makes
+# of the router's answer and what it refuses before calling ssh; then the
+# router's half, run here against stand-ins.
 # shellcheck source=tests/lib.sh
 . "$(dirname -- "$0")/lib.sh"
 
@@ -46,17 +46,16 @@ check_in "$(sent)" "'add' '1' '0' '0' '5' 'aa:bb:cc:dd:ee:ff' 'aa:bb:cc:dd:ee:00
 acl -s "it's" list
 check_in "$(sent)" "'it'\\''s'" "an SSID with a quote is quoted for the remote shell"
 
+acl -n -b 6g add aa:bb:cc:dd:ee:ff
+check_in "$(sent)" "'add' '1' '0' '0' '6' " "-b 6g is 6"
+
 for args in '-b 7 list' 'add' "add bad!name" 'add aa:bb:cc' 'del' \
-    'list extra' 'clients extra' 'frob'; do
+    'list extra' 'clients extra' 'frob' '-f -l add aa:bb:cc:dd:ee:ff' '' \
+    '-z list'; do
     # shellcheck disable=SC2086  # each case is a word list
     acl $args
-    check_rc 1 "refuses [$args]"
-    check_eq "$(sent)" "" "refuses [$args]: before calling ssh"
-done
-for args in '' '-z list'; do
-    # shellcheck disable=SC2086
-    acl $args
     check_rc 2 "refuses [$args] as a usage error"
+    check_eq "$(sent)" "" "refuses [$args]: before calling ssh"
 done
 
 # --- the router's half -------------------------------------------------
@@ -124,6 +123,17 @@ check_in "$out" "committed; reloading home" "add: the BSSes carrying the SSID re
 check_in "$(cat "$UCI_LOG")" "add_list wireless.sec0.maclist=aa:bb:cc:dd:ee:09" "add: committed to uci"
 check_in "$(cat "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist")" "aa:bb:cc:dd:ee:09" \
     "add: hostapd's accept-list file rewritten"
+check_eq "$(cat "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist")" "aa:bb:cc:dd:ee:01
+aa:bb:cc:dd:ee:09" "add: hostapd is given each MAC as aa:bb:cc:dd:ee:ff"
+
+router
+sed 's/ssid home$/ssid Home\/Guest [1]/' "$UCI_STATE" > "$UCI_STATE.new"
+mv -- "$UCI_STATE.new" "$UCI_STATE"
+remote 'Home/Guest [1]' dump 0 0 0 all
+check_rc 0 "an SSID with a / and brackets: found"
+check_in "$out" "iface${tab}sec1${tab}wlan1" "an SSID with a /: both radios"
+remote 'Home' dump 0 0 0 all
+check_rc 1 "an SSID is matched whole, not as a prefix"
 
 router
 rm -f -- "$HOSTAPD_RUN_DIR/hostapd-wlan1.maclist"

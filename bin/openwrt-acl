@@ -11,9 +11,10 @@ set -eu
 progname=${0##*/}
 readonly progname
 
-die() {
+# a command line that cannot be right: exit 2, as -z does
+usage_error() {
     printf '%s: %s\n' "$progname" "$*" >&2
-    exit 1
+    exit 2
 }
 
 usage() {
@@ -91,8 +92,15 @@ shift 6
 
 tab=$(printf '\t')
 
+# The SSID is compared as uci gives it back, never spliced into a
+# pattern: a "/", a quote or a regex character in it is only text.
 sections=$(uci show wireless |
-    sed -n "s/^wireless\.\([^.]*\)\.ssid='$ssid'\$/\1/p")
+    sed -n 's/^wireless\.\([^.=]*\)\.ssid=.*/\1/p' |
+    while read -r s; do
+        if [ "$(uci -q get "wireless.$s.ssid" || :)" = "$ssid" ]; then
+            printf '%s\n' "$s"
+        fi
+    done)
 [ -n "$sections" ] ||
     { printf 'no wifi-iface has ssid %s\n' "$ssid" >&2; exit 1; }
 
@@ -293,7 +301,9 @@ add | del)
         for s in $sections; do
             i=$(ifname_of "$s")
             f=$rundir/hostapd-$i.maclist
-            raw_list "$s" > "$f.new"
+            # hostapd wants aa:bb:cc:dd:ee:ff, whatever uci holds
+            raw_list "$s" | awk "$canon"'{ print canon($0) }' | sort -u \
+                > "$f.new"
             mv "$f.new" "$f"
         done
         ifaces=$(for s in $sections; do ifname_of "$s"; done)
@@ -409,8 +419,11 @@ case "$band" in
     all | 2.4 | 5 | 6) ;;
     2.4GHz | 2g) band=2.4 ;;
     5GHz | 5g) band=5 ;;
-    *) die "-b takes 2.4, 5, 6 or all, not: $band" ;;
+    6GHz | 6g) band=6 ;;
+    *) usage_error "-b takes 2.4, 5, 6 or all, not: $band" ;;
 esac
+[ "$full" = 0 ] || [ "$defer" = 0 ] ||
+    usage_error "-f applies now and -l defers: give one of them"
 
 [ $# -ge 1 ] || { usage >&2; exit 2; }
 cmd=$1
@@ -419,7 +432,7 @@ shift
 macs=''
 case "$cmd" in
     add | del)
-        [ $# -ge 1 ] || die "$cmd needs at least one MAC address"
+        [ $# -ge 1 ] || usage_error "$cmd needs at least one MAC address"
         for arg do
             # a name is resolved against /etc/ethers on the router
             if mac=$(normalise_mac "$arg"); then
@@ -427,17 +440,18 @@ case "$cmd" in
             else
                 case "$arg" in
                     *[!A-Za-z0-9_.-]* | '')
-                        die "neither a MAC address nor a name: $arg" ;;
+                        usage_error "neither a MAC address nor a name:" \
+                            "$arg" ;;
                 esac
                 macs="$macs $arg"
             fi
         done
         ;;
     list | clients)
-        [ $# -eq 0 ] || die "$cmd takes no arguments"
+        [ $# -eq 0 ] || usage_error "$cmd takes no arguments"
         ;;
     *)
-        die "unknown command: $cmd (try -h)"
+        usage_error "unknown command: $cmd (try -h)"
         ;;
 esac
 
