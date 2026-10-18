@@ -1,0 +1,136 @@
+.Dd October 18, 2026
+.Dt WHERE-AM-I 1
+.Os
+.Sh NAME
+.Nm where-am-i
+.Nd name the place this machine is at, from the Wi-Fi it is on
+.Sh SYNOPSIS
+.Nm
+.Op Fl qv
+.Op Fl c Ar file
+.Op Fl i Ar interface
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+prints the name of the place this machine is at, found from the SSID
+of the Wi-Fi network it is associated with: home, work, whatever the
+configuration calls it, or
+.Ql unknown .
+.Pp
+The SSID is that of the first wireless interface that is associated:
+on
+.Fx
+the members of the
+.Ql wlan
+interface group, as
+.Xr ifconfig 8
+reports them; on Linux the interfaces with a
+.Pa wireless
+directory under
+.Pa /sys/class/net ,
+asked with
+.Xr iw 8 ,
+else with
+.Xr wpa_cli 8 .
+An SSID is trusted only while the interface is associated: a known
+network out of range is not a place.
+.Pp
+The configuration has one line per network, the place first, then the
+SSID, which is the rest of the line, spaces included but trailing
+blanks dropped:
+.Bd -literal -offset indent
+# place  ssid
+home     rezo_zero
+work     eduroam
+.Ed
+.Pp
+Blank lines, and lines whose first non-blank character is
+.Ql # ,
+are ignored.
+The first line naming the SSID decides.
+Without a configuration, every place is unknown.
+.Sh OPTIONS
+.Bl -tag -width "-i interface"
+.It Fl c Ar file
+Read the configuration from
+.Ar file .
+.It Fl h
+Print the usage and exit.
+.It Fl i Ar interface
+Ask this wireless interface alone.
+.It Fl q
+Quiet: print nothing, and answer with the exit status only.
+.It Fl v
+Say on stderr what the answer rests on: each interface asked, the SSID
+it is associated with and the place it gives, whether a configuration
+was found, and the wired facts: the interface the default route leaves
+by, its IPv4 address, and, for a
+.Xr lagg 4
+on
+.Fx
+or a bond on Linux, its active port.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width XDG_CONFIG_HOME
+.It Ev SYSFS
+The root of sysfs on Linux, instead of
+.Pa /sys .
+.It Ev WHERE_AM_I_CONFIG
+The configuration file, when
+.Fl c
+is not given.
+.It Ev XDG_CONFIG_HOME
+The directory of the default configuration, instead of
+.Pa ~/.config .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.config/where-am-i
+The configuration, when neither
+.Fl c
+nor
+.Ev WHERE_AM_I_CONFIG
+names one.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The place is known.
+.It 1
+The place is unknown, or the platform is neither
+.Fx
+nor Linux, in which case
+.Ql unknown
+is printed all the same.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+The place, for a status bar:
+.Bd -literal -offset indent
+$ where-am-i
+home
+.Ed
+.Pp
+Do something only at work:
+.Bd -literal -offset indent
+$ [ "$(where-am-i)" = work ] && mount /net/work
+.Ed
+.Pp
+Why the answer is what it is:
+.Bd -literal -offset indent
+$ where-am-i -v -i wlan0
+.Ed
+.Sh SEE ALSO
+.Xr ifconfig 8 ,
+.Xr iw 8 ,
+.Xr wpa_cli 8
+.Sh CAVEATS
+A place is known by its SSID alone, and an SSID is not unique: any
+network named like the one at home is home.
+.Pp
+The wired facts
+.Fl v
+reports are gathered for rules not yet written; no answer rests on
+them.

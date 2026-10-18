@@ -1,0 +1,130 @@
+.Dd October 18, 2026
+.Dt DO-SCREENSHOT 1
+.Os
+.Sh NAME
+.Nm do-screenshot
+.Nd screenshot the X11 desktop, an area or the active window
+.Sh SYNOPSIS
+.Nm
+.Op Fl d Ar dir
+.Op Cm desktop | area | window | Cm delay Op Ar seconds
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+takes a screenshot under X11 with
+.Xr maim 1 ,
+saves it as a PNG, copies it to the clipboard and announces it in a
+notification.
+The mode says what is captured:
+.Bl -tag -width "delay [seconds]"
+.It Cm desktop
+The whole X screen, every output.
+.It Cm area
+A rectangle, or a window, picked with the mouse.
+.It Cm window
+The window that has the focus.
+.It Cm delay Op Ar seconds
+The window that has the focus
+.Ar seconds
+from now, 5 by default: time to switch to it.
+The wait is counted down in a notification, replaced each second.
+.El
+.Pp
+Without a mode, one is picked from a
+.Xr rofi 1
+menu, so a key binding or a bar button can run
+.Nm
+bare.
+A menu dismissed is not an error, and takes no screenshot.
+.Pp
+The file is
+.Pa Screenshot_YYYY-MM-DD-HH-MM-SS.png
+in the directory of
+.Fl d ,
+else
+.Ev XDG_PICTURES_DIR ,
+else
+.Pa ~/Pictures ,
+which is created if need be.
+A name already taken gets a
+.Ql -2 ,
+.Ql -3
+\&... suffix; the name is claimed by creating the file, so two shots in
+the same second cannot pick the same one.
+Its path is printed on stdout.
+A capture that fails, such as an area selection cancelled, removes the
+file, so a failure never leaves an empty PNG behind.
+.Pp
+Only
+.Xr maim 1
+is required, and
+.Xr xdotool 1
+to find the active window.
+The clipboard and the notification are what follow a screenshot, not
+the screenshot itself: without
+.Xr xclip 1
+or
+.Xr notify-send 1 ,
+.Nm
+says on stderr what it skipped, and still succeeds.
+.Sh OPTIONS
+.Bl -tag -width "-d dir"
+.It Fl d Ar dir
+Save into
+.Ar dir .
+.It Fl h
+Print the usage and exit.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width XDG_PICTURES_DIR
+.It Ev XDG_PICTURES_DIR
+The directory screenshots are saved into, unless
+.Fl d .
+.It Ev HOME
+Where
+.Pa ~/Pictures
+is, without either.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The screenshot was saved, or the menu was dismissed.
+.It 1
+No screenshot was taken: an area selection cancelled, an answer typed
+into the menu that is no mode, no
+.Xr rofi 1
+to ask for a mode,
+.Xr maim 1
+or
+.Xr xdotool 1
+missing or failing, or a directory that cannot be created.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+In
+.Xr i3 1 ,
+the menu on the Print key:
+.Bd -literal -offset indent
+bindsym --release Print exec --no-startup-id do-screenshot
+.Ed
+.Pp
+The focused window in ten seconds, into a directory of its own:
+.Bd -literal -offset indent
+$ do-screenshot -d ~/shots delay 10
+.Ed
+.Sh SEE ALSO
+.Xr maim 1 ,
+.Xr notify-send 1 ,
+.Xr rofi 1 ,
+.Xr xclip 1 ,
+.Xr xdotool 1
+.Sh CAVEATS
+.Nm
+works under X11 only.
+Its menu is
+.Xr rofi 1 Ns 's
+plain dmenu, styled only by
+.Xr rofi 1 Ns 's
+own configuration.

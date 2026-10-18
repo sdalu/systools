@@ -1,0 +1,90 @@
+.Dd October 18, 2026
+.Dt SHRINK-PDF 1
+.Os
+.Sh NAME
+.Nm shrink-pdf
+.Nd make a PDF smaller by recompressing it with Ghostscript
+.Sh SYNOPSIS
+.Nm
+.Op Fl v
+.Ar infile
+.Op Ar outfile | Fl
+.Op Ar dpi
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+rewrites
+.Ar infile
+with Ghostscript, its images downsampled to
+.Ar dpi ,
+72 by default, and its fonts embedded and subset.
+The result goes to
+.Ar outfile ,
+or to the standard output when it is
+.Ql -
+or left out.
+.Pp
+The recompression is lossy, and not always smaller: when the result is
+no smaller than the input, the input itself is written instead.
+Ghostscript writes to a temporary file first, so a failed run leaves
+.Ar outfile
+as it was.
+An
+.Ar outfile
+that exists keeps its mode and its links; a new one gets the mode the
+umask gives.
+.Pp
+Writing the result over the input, under its own name or through a
+link, is refused: Ghostscript would read the file being truncated.
+An
+.Ar infile
+whose name starts with
+.Ql -
+is read as a file, not as an option.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h
+Print the usage and exit.
+.It Fl v
+Report the sizes before and after, on stderr, and whether the input
+was kept.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width TMPDIR
+.It Ev TMPDIR
+Where the temporary file is made, instead of
+.Pa /tmp .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The result, or the input, was written.
+.It 1
+.Ar infile
+cannot be read, Ghostscript is missing, or it failed.
+.It 2
+A usage error:
+.Ar dpi
+is not a positive number, or
+.Ar outfile
+is
+.Ar infile .
+.El
+.Sh EXAMPLES
+Shrink a scan to send by mail:
+.Bd -literal -offset indent
+$ shrink-pdf -v scan.pdf scan-small.pdf
+.Ed
+.Pp
+Keep the images sharper, at 150 dpi:
+.Bd -literal -offset indent
+$ shrink-pdf report.pdf report-small.pdf 150
+.Ed
+.Sh SEE ALSO
+.Xr gs 1
+.Sh HISTORY
+After Alfred Klomp's
+.Pa shrinkpdf.sh
+.Pq BSD 3-Clause ,
+.Lk http://alfredklomp.com/programming/shrinkpdf/ .

@@ -1,0 +1,89 @@
+.Dd October 18, 2026
+.Dt LOW-PRIORITY 1
+.Os
+.Sh NAME
+.Nm low-priority
+.Nd run a command at the lowest priority the system allows
+.Sh SYNOPSIS
+.Nm
+.Op Fl v
+.Ar command
+.Op Ar arg ...
+.Sh DESCRIPTION
+.Nm
+runs
+.Ar command
+so that it only gets the CPU, and on Linux the disk, when nothing else
+wants them.
+Options are read up to the first argument that is not one, so the
+command's own are left alone:
+.Ql low-priority -v make -j4 .
+.Pp
+On
+.Fx ,
+the command runs under
+.Ic nice -n 20
+in the idle scheduling class,
+.Ic idprio 30 .
+On Linux, it runs under
+.Ic nice -n 19 ,
+the
+.Dv SCHED_IDLE
+policy
+.Pq Ic chrt -i 0
+and the idle I/O class
+.Pq Ic ionice -c 3 .
+Elsewhere, under
+.Ic nice -n 19
+alone.
+.Pp
+Each scheduling tool but
+.Xr nice 1
+is first run on
+.Xr true 1 ,
+and one that is missing or refused is dropped, the command running
+under what remains, down to plain
+.Xr nice 1 .
+Asking the tool is the only test that covers every reason it may
+refuse: a sysctl, root, a jail, a container's seccomp filter.
+.Nm
+then replaces itself with the command.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl v
+Say on stderr which tool was skipped, and the command line run, quoted
+so that it can be pasted back into a shell.
+.El
+.Sh EXIT STATUS
+The exit status of
+.Ar command ;
+2 for a usage error, a missing
+.Ar command
+included.
+.Sh EXAMPLES
+A build that leaves the machine responsive:
+.Bd -literal -offset indent
+$ low-priority make -j8
+.Ed
+.Pp
+What it would run, and what it had to drop:
+.Bd -literal -offset indent
+$ low-priority -v true
+low-priority: running: nice -n 20 idprio 30 true
+.Ed
+.Sh SEE ALSO
+.Xr chrt 1 ,
+.Xr idprio 1 ,
+.Xr ionice 1 ,
+.Xr nice 1
+.Sh CAVEATS
+On
+.Fx ,
+the idle class is had only by root, unless the sysctl
+.Va security.bsd.unprivileged_idprio
+is 1; otherwise the command runs under plain
+.Xr nice 1 .
+.Pp
+On Linux,
+.Ic ionice -c 3
+has an effect only with the BFQ or CFQ disk scheduler.

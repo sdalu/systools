@@ -32,9 +32,10 @@ installed under a prefix; there is nothing to build.
 | `zfs-prune-snapshots` | destroy all but the newest N snapshots of datasets | `zfs` |
 | `zfs-snapshot` | take today's dated snapshot of a dataset and expire old ones; meant to run once a day | `zfs` |
 
-Each tool prints its usage with `-h`; the header comment at the top of
-each script says the rest -- configuration, defaults, platform
-differences. Options are short ones only (`-r`, not `--recursive`). Exit
+Each tool prints its usage with `-h`, and has a man page (`man/`,
+installed with the tools) saying the rest -- configuration, defaults,
+platform differences; the header comment at the top of each script
+summarises it. Options are short ones only (`-r`, not `--recursive`). Exit
 status is 0 on success, 1 on failure and 2 on a usage error, except for
 `low-priority`, `with-gnu-make` and `term-title -e`, which run a command
 and return its own, `is-docked`, which answers with 0 (docked) or 1
@@ -56,6 +57,10 @@ make install-links PREFIX=$HOME # symlinks into ~/bin, for working on them
 make uninstall                  # or uninstall-links
 ```
 
+`install` puts each tool's man page under `$(PREFIX)/share/man/man1`
+(`MANDIR`); `install-links` symlinks them there too, so `man` finds
+the pages beside `~/bin`.
+
 Beyond `sh`, `awk`, `sed` and the usual utilities -- any POSIX awk will
 do: FreeBSD's, gawk, mawk -- a tool needs only what its row above names.
 
@@ -68,7 +73,9 @@ make tests                      # the suite
 make tests SH=dash              # the suite, with the scripts run under dash
 ```
 
-`make check` needs `shellcheck`; it also checks that the functions
+`make check` needs `shellcheck` and `mandoc` (in FreeBSD base; a
+package on Linux); it lints the man pages, holds each page's options to
+its tool's `getopts`, and checks that the functions
 `transcribe` and `vocalise` share are still the same in both. `make
 tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
 `curl`, `fetch`, `gs`, `ip`, `route`, `ssh`, `sysctl`, `ifconfig`, `xrandr`,

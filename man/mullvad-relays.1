@@ -1,0 +1,213 @@
+.Dd October 18, 2026
+.Dt MULLVAD-RELAYS 1
+.Os
+.Sh NAME
+.Nm mullvad-relays
+.Nd download, select and describe Mullvad VPN relays
+.Sh SYNOPSIS
+.Nm
+.Op Fl adorR
+.Op Fl C Ar city
+.Op Fl c Ar country
+.Op Fl p Ar provider
+.Op Fl s Ar gbps
+.Op Fl t Ar type
+.Op Fl L | Fl i | Fl f Ar fields | Fl w
+.Op Ar host ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+lists the relays of the Mullvad VPN, the servers a tunnel can end at,
+from the public list Mullvad publishes.
+It selects them by place, type, provider, ownership, DAITA and speed,
+and prints them as a table, as every field they carry, as chosen
+fields for a script, as a count per place, or as the
+.Ql [Peer]
+section of a WireGuard configuration.
+.Pp
+The list is downloaded once a day and kept in a cache
+.Pq Sx FILES .
+A download that fails, or that is not a relay list, leaves the cache in
+place, and
+.Nm
+goes on with the list it has, after saying so on stderr.
+.Pp
+A relay is selected when it passes every option given, and, when hosts
+are named, when its hostname starts with one of them:
+.Ar se-got
+selects every relay in Gothenburg,
+.Ar se-got-wg-001
+that relay alone.
+Only active relays are selected, unless
+.Fl a .
+The list arguments of
+.Fl c , C , p
+and
+.Fl t
+are comma-separated, and are matched without regard to the case of
+ASCII letters.
+.Sh OPTIONS
+.Bl -tag -width "-f fields"
+.It Fl a
+Include relays that are not active.
+They are flagged
+.Ql inactive
+in the table.
+.It Fl C Ar city
+Relays in these cities, each named by its code
+.Pq Ql got
+or its name
+.Pq Ql Gothenburg .
+.It Fl c Ar country
+Relays in these countries, each named by its code
+.Pq Ql se
+or its name
+.Pq Ql Sweden .
+.It Fl d
+Only relays that offer DAITA, Mullvad's defence against traffic
+analysis.
+.It Fl f Ar fields
+Print the fields named, comma-separated, as one tab-separated line per
+relay, with no header.
+The field names are those
+.Fl i
+shows; a field a relay lacks
+.Pq a bridge has no Ql pubkey
+is empty.
+A name no relay carries is a usage error.
+.It Fl h
+Print the usage and exit.
+.It Fl i
+Print every field of each relay, one
+.Ql name: value
+line each, with a blank line between relays.
+A field holding a list, such as
+.Ql status_messages ,
+is printed on one line.
+.It Fl L
+List the countries and cities of the relays selected, with how many
+relays each has, in the order of the list.
+.It Fl o
+Only relays Mullvad owns, rather than rents from a hosting provider.
+.It Fl p Ar provider
+Relays hosted by these providers.
+.It Fl R
+Keep one relay, drawn at random from those selected, each as likely as
+the others.
+.It Fl r
+Download the list now, however old the cache is.
+.It Fl s Ar gbps
+Relays whose port speed is at least this many Gbit/s, a whole number.
+.It Fl t Ar type
+Relays of these types:
+.Ql wireguard
+.Pq or Ql wg
+and
+.Ql bridge
+.Pq or Ql br ,
+the relays that carry a tunnel through a censoring network.
+.It Fl w
+Print the WireGuard
+.Ql [Peer]
+section for the relay selected: its public key, every address routed
+through it, and its IPv4 address on port 51820 as the endpoint, after
+a comment naming it.
+Only WireGuard relays are considered, and the selection must come down
+to one relay: name it, or add
+.Fl R .
+.El
+.Pp
+.Fl L , i , f
+and
+.Fl w
+exclude one another, and
+.Fl R
+cannot go with
+.Fl L .
+Without any of them,
+.Nm
+prints a table of the relays selected, one per line, with a header:
+hostname, country, city, provider, port speed in Gbit/s, and flags
+among
+.Ql owned ,
+.Ql daita ,
+.Ql inactive
+and
+.Ql notice ,
+the last when Mullvad has posted a status message about the relay
+.Pq Fl i No shows it .
+.Sh ENVIRONMENT
+.Bl -tag -width MULLVAD_RELAYS_CACHE
+.It Ev MULLVAD_RELAYS_CACHE
+The cache file, instead of the one under
+.Ev XDG_CACHE_HOME .
+.It Ev XDG_CACHE_HOME
+The directory of the default cache, instead of
+.Pa ~/.cache .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.cache/mullvad-relays.json
+The relay list as last downloaded, from
+.Lk https://api.mullvad.net/www/relays/all/ .
+It is downloaded again once it is a day old.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+A relay was selected and printed.
+.It 1
+No relay was selected; with
+.Fl w ,
+more than one was; or the list could neither be downloaded nor be
+found in the cache.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+The relays in Gothenburg and Malm\(:o that offer DAITA:
+.Bd -literal -offset indent
+$ mullvad-relays -d -C got,mma
+.Ed
+.Pp
+The countries Mullvad owns relays in:
+.Bd -literal -offset indent
+$ mullvad-relays -o -L
+.Ed
+.Pp
+The address and key of every Swiss WireGuard relay, for a script:
+.Bd -literal -offset indent
+$ mullvad-relays -t wg -c ch -f hostname,ipv4_addr_in,pubkey
+.Ed
+.Pp
+A WireGuard configuration for a Swedish relay drawn at random, from an
+.Ql [Interface]
+section of one's own: the private key, and the address Mullvad
+assigned when its public key was registered:
+.Bd -literal -offset indent
+$ cat interface.conf > wg-mullvad.conf
+$ mullvad-relays -w -R -c se >> wg-mullvad.conf
+.Ed
+.Sh SEE ALSO
+.Xr curl 1 ,
+.Xr fetch 1 ,
+.Xr wg 8 ,
+.Xr wg-quick 8
+.Sh CAVEATS
+The list is the one Mullvad's web site reads; it is public but not
+documented, so a change to its fields comes unannounced.
+.Pp
+Case is ignored for ASCII letters only:
+.Fl C Ar malm\(:o
+finds Malm\(:o, and
+.Fl C Ar MALM\(:O
+does not.
+.Pp
+Without
+.Xr curl 1 ,
+the list is downloaded with
+.Xr fetch 1 ,
+which
+.Fx
+has in its base system.

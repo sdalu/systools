@@ -1,0 +1,164 @@
+.Dd October 18, 2026
+.Dt SCREEN-EXTEND 1
+.Os
+.Sh NAME
+.Nm screen-extend
+.Nd lay an external X11 output out as the primary, beside the internal panel
+.Sh SYNOPSIS
+.Nm
+.Op Fl nv
+.Op Fl i Ar internal
+.Op Fl m Ar mode
+.Op Fl o Ar output
+.Op Fl p Ar place
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+extends an X11 desktop onto an external output, on
+.Fx
+and Linux alike.
+The external output becomes the primary, at its preferred mode or at
+.Fl m Ns 's,
+at 0x0, and the internal panel is placed against it at its own
+preferred mode: below it, above it, to its left or right, or off.
+With no external output connected, the internal panel alone is left
+on, as the primary.
+So one command, run on docking and on undocking alike, gives the
+layout for either.
+.Pp
+The internal panel is
+.Fl i ,
+else the first connected eDP, LVDS or DSI output.
+The external output is
+.Fl o ,
+else the first other connected output that lists a mode: a port that
+says connected but has no EDID has nothing to drive, and choosing it
+would leave the real screen dark.
+A dock that renumbers its ports
+.Pq DP-1, DP-1-1, DP-3-1
+therefore needs no editing.
+Any other connected output is turned off, as is an output still driving
+a mode after it was disconnected, which an undock leaves behind, so the
+result never overlaps what was there before.
+Positions are worked out and given explicitly, rather than with
+.Ql --below
+and the like, so the layout does not depend on the mode an output was
+left in; outputs are aligned on their top or left edge.
+.Pp
+.Nm
+runs at the moment a dock is plugged in or wakes up, when its outputs
+are still appearing.
+It therefore asks
+.Xr xrandr 1
+twice, a settling second apart
+.Pq Ev SCREEN_EXTEND_SETTLE ,
+and lays the outputs out from the second answer.
+The whole layout is one
+.Xr xrandr 1
+call; afterwards it is read back and compared, output by output, and
+applied again, up to three times, because a waking dock can drop the
+request while
+.Xr xrandr 1
+still reports success.
+.Sh OPTIONS
+.Bl -tag -width "-i internal"
+.It Fl h
+Print the usage and exit.
+.It Fl i Ar internal
+The internal panel, instead of the first connected eDP, LVDS or DSI
+output.
+It must be connected.
+.It Fl m Ar mode
+The external output's mode, as
+.Ar W Ns x Ns Ar H ,
+instead of its preferred one.
+The output must list it.
+.It Fl n
+Dry run: print the
+.Xr xrandr 1
+command instead of running it.
+The outputs are probed without the settling pause, and nothing is read
+back.
+.It Fl o Ar output
+The external output, instead of the first other connected one that
+lists a mode.
+It must be connected, and must not be the internal panel.
+.It Fl p Ar place
+Where the internal panel goes:
+.Cm below
+.Pq the default ,
+.Cm above ,
+.Cm left ,
+.Cm right ,
+or
+.Cm off .
+Without an external output, the panel stays on whatever
+.Ar place
+says.
+.It Fl v
+Report the outputs found, the layout chosen and each attempt that did
+not take, on stderr.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width SCREEN_EXTEND_SETTLE
+.It Ev SCREEN_EXTEND_SETTLE
+The seconds to wait between the two probes, and between attempts; 1
+by default, more for a slower dock.
+A number, with a fraction or not.
+.It Ev TMPDIR
+Where the probe is kept while
+.Nm
+runs, instead of
+.Pa /tmp .
+.It Ev XRANDR
+The
+.Xr xrandr 1
+command to run, instead of
+.Ql xrandr .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The layout was applied, or printed with
+.Fl n .
+.It 1
+No output is connected, an output named is not connected, a mode is
+not listed,
+.Fl m
+was given with no external output to set, or the layout would not
+stick after three attempts.
+.It 2
+A usage error, a
+.Ar mode
+not of the form
+.Ar W Ns x Ns Ar H
+or a
+.Ar place
+not in the list included.
+.El
+.Sh EXAMPLES
+On docking or undocking, the external screen as the primary and the
+laptop's panel below it, or the panel alone:
+.Bd -literal -offset indent
+$ screen-extend
+.Ed
+.Pp
+The panel to the left of the external screen, which runs at 1920x1080:
+.Bd -literal -offset indent
+$ screen-extend -p left -m 1920x1080
+.Ed
+.Pp
+The external screen alone, with what would be run shown first:
+.Bd -literal -offset indent
+$ screen-extend -n -p off
+.Ed
+.Sh SEE ALSO
+.Xr is-docked 1 ,
+.Xr screen-mirror 1 ,
+.Xr xrandr 1
+.Sh CAVEATS
+.Nm
+works under X11 only; a Wayland session has no
+.Xr xrandr 1
+to drive.

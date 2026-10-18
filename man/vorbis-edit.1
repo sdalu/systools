@@ -1,0 +1,69 @@
+.Dd October 18, 2026
+.Dt VORBIS-EDIT 1
+.Os
+.Sh NAME
+.Nm vorbis-edit
+.Nd edit the comments of an Ogg Vorbis file in an editor
+.Sh SYNOPSIS
+.Nm
+.Ar file.ogg
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+lists the comments (the tags) of an Ogg Vorbis file into a temporary
+file, one
+.Ql NAME=value
+per line, opens it in an editor, and writes the comments back,
+replacing them all, once the editor exits 0 having changed the file.
+.Pp
+An editor that fails, or a file left as it was, writes nothing:
+writing the comments rewrites the whole Ogg file, so an edit abandoned
+costs nothing.
+Should the write fail, the edited comments are kept, and their file
+named, so the edit is not lost.
+.Pp
+Comments are read and written as UTF-8, with
+.Ql \en
+escapes, so a comment spanning lines stays on one.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h
+Print the usage and exit.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width TMPDIR
+.It Ev VISUAL
+The editor, a command line such as
+.Ql emacs -nw .
+.It Ev EDITOR
+The editor when
+.Ev VISUAL
+is unset; without either,
+.Xr vi 1 .
+.It Ev TMPDIR
+Where the temporary file is made, instead of
+.Pa /tmp .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The comments were written, or left alone because nothing changed.
+.It 1
+The file is missing or cannot be both read and written,
+.Xr vorbiscomment 1
+is missing, the comments cannot be read or written, or the editor
+failed.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+Fix the title of a track:
+.Bd -literal -offset indent
+$ vorbis-edit 01-intro.ogg
+.Ed
+.Sh SEE ALSO
+.Xr vorbiscomment 1
+.Sh CAVEATS
+Only Ogg Vorbis is edited; the tags of an Opus file need
+.Xr opustags 1 .

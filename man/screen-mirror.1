@@ -1,0 +1,163 @@
+.Dd October 18, 2026
+.Dt SCREEN-MIRROR 1
+.Os
+.Sh NAME
+.Nm screen-mirror
+.Nd mirror one X11 output onto the others
+.Sh SYNOPSIS
+.Nm
+.Op Fl knv
+.Op Fl m Ar mode
+.Op Fl s Ar source
+.Op Ar target ...
+.Nm
+.Op Fl s Ar source
+.Fl l
+.Nm
+.Op Fl nv
+.Op Fl s Ar source
+.Fl x
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+mirrors one output onto every other connected output, under X11, on
+.Fx
+and Linux alike.
+The source is the primary output, unless
+.Fl s
+names another
+.Pq or the first connected output, when none is primary ;
+the targets are every other connected output, unless some are named as
+operands.
+.Pp
+Picking the mode is the whole job.
+.Ql xrandr --auto
+is not it: a projector or a cheap HDMI switch commonly advertises
+1024x768 as its preferred mode, so
+.Ql --auto
+mirrors at 1024x768.
+By default every output taking part is set to the largest mode they
+all list, which is an exact, pixel-for-pixel mirror, but can pull the
+internal panel below its native resolution
+.Pq 1920x1200 to 1920x1080, against a 1080p projector .
+.Fl k
+keeps the source at its own mode and scales each target to it instead,
+at the cost of a resampled, possibly stretched image on the target.
+When no mode is common to every output,
+.Fl k
+is used whether it was asked for or not, and
+.Nm
+says so.
+.Pp
+Every question
+.Nm
+asks \(em which outputs are connected, which is primary, what modes
+each lists \(em is answered from a single
+.Ql xrandr --query ,
+so all the answers describe the same instant; and the change is then
+one
+.Xr xrandr 1
+call, so the screens never pass through a half-applied layout.
+.Sh OPTIONS
+.Bl -tag -width "-s source"
+.It Fl h
+Print the usage and exit.
+.It Fl k
+Keep the source at its mode
+.Pq Fl m Ns 's, else the one it drives now, else its preferred one ,
+and drive each target at its own preferred mode with the source's
+picture scaled onto it.
+.It Fl l
+List the connected outputs, each with its preferred mode, the mode it
+drives now and how many modes it lists, then the modes they all share,
+and exit.
+.It Fl m Ar mode
+Use this mode, as
+.Ar W Ns x Ns Ar H ,
+instead of picking one.
+The source must list it, and so must every target unless
+.Fl k .
+.It Fl n
+Dry run: print the
+.Xr xrandr 1
+command instead of running it.
+.It Fl s Ar source
+The output to mirror, instead of the primary.
+It must be connected.
+.It Fl v
+Report the outputs found, the source, the targets and the mode chosen,
+on stderr.
+.It Fl x
+Undo: turn the targets off, and set the source back to its preferred
+mode, unscaled, at 0x0, as the primary.
+.El
+.Pp
+.Fl l
+and
+.Fl x
+exclude each other, and take no
+.Ar target .
+A
+.Ar target
+named must be connected, and must not be the source.
+.Sh ENVIRONMENT
+.Bl -tag -width TMPDIR
+.It Ev TMPDIR
+Where the probe is kept while
+.Nm
+runs, instead of
+.Pa /tmp .
+.It Ev XRANDR
+The
+.Xr xrandr 1
+command to run, instead of
+.Ql xrandr .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The outputs were mirrored, listed or put back, or the command was
+printed with
+.Fl n .
+.It 1
+No output is connected, there is nothing to mirror to, an output named
+is not connected, or a mode is not listed or there is none to use.
+.It 2
+A usage error, a
+.Ar mode
+not of the form
+.Ar W Ns x Ns Ar H
+included.
+.El
+.Sh EXAMPLES
+Mirror the laptop's panel onto a projector, at the largest mode both
+list:
+.Bd -literal -offset indent
+$ screen-mirror
+.Ed
+.Pp
+Keep the panel at its native resolution and scale the projector's
+picture to it:
+.Bd -literal -offset indent
+$ screen-mirror -k
+.Ed
+.Pp
+See what the outputs share, then go back to the panel alone:
+.Bd -literal -offset indent
+$ screen-mirror -l
+$ screen-mirror -x
+.Ed
+.Sh SEE ALSO
+.Xr screen-extend 1 ,
+.Xr xrandr 1
+.Sh CAVEATS
+.Nm
+works under X11 only; a Wayland session has no
+.Xr xrandr 1
+to drive.
+.Pp
+.Fl x
+is the quick way back to one screen;
+.Xr screen-extend 1
+lays the outputs out side by side instead.

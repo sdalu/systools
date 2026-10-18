@@ -8,15 +8,17 @@ Small system tools in POSIX sh, for FreeBSD and Linux.
 - `DESIGN.md` — why they are shaped so
 - `HISTORY.md` — what was tried and abandoned
 - `CHECKLIST.md` — what has to be true before a round here is done
-- `bin/` — the tools; each one's header comment is its documentation
+- `bin/` — the tools; each one's header comment is a summary of it
+- `man/` — one mdoc page per tool, the full reference; `make check`
+  lints them and holds each page's options to its tool's `getopts`
 - `tests/` — the suite: `tests/lib.sh` (helpers), `tests/run.sh`, one
   `t-*.sh` per tool, stand-ins for external tools in `tests/fake/`, and
   recorded real output in `tests/data/`
 
 ## Gate
 
-Gate: `make check && make tests` — `check` is preflight (parse, shellcheck)
-and runs none of the tools; `tests` runs them all against the stand-ins.
+Gate: `make check && make tests` — `check` is preflight (parse, shellcheck,
+the man pages) and runs none of the tools; `tests` runs them all against the stand-ins.
 
 ## Traps
 

@@ -1,0 +1,175 @@
+.Dd October 18, 2026
+.Dt PDF2JPG 1
+.Os
+.Sh NAME
+.Nm pdf2jpg
+.Nd turn PDF pages into JPEGs at a pixel size, under an optional byte cap
+.Sh SYNOPSIS
+.Nm
+.Op Fl cgL
+.Op Fl e Ar engine
+.Op Fl f Ar first
+.Op Fl i Ar icc
+.Op Fl l Ar last
+.Op Fl n Ar mode
+.Op Fl o Ar dir
+.Op Fl p Ar name
+.Op Fl q Ar quality
+.Op Fl s Ar size
+.Op Fl w Ar px
+.Op Fl x Ar n
+.Ar file.pdf
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+renders the pages of a PDF file and writes each one as a JPEG whose
+longest edge is a given number of pixels, optionally under a given
+number of bytes.
+Each stage is done by the tool best at it:
+.Bl -tag -width "downsample"
+.It rasterise
+.Xr pdftoppm 1 ,
+for sharp text and anti-aliased vector graphics, or
+.Xr gs 1
+with
+.Fl e Ar gs ,
+for correct CMYK and ICC handling.
+.It downsample
+.Xr magick 1 ,
+with a Lanczos filter, optionally in linear light
+.Pq Fl L .
+.It encode
+mozjpeg's
+.Xr cjpeg 1 ,
+else libjpeg's
+.Xr cjpeg 1 ,
+else
+.Xr magick 1 .
+.El
+.Pp
+Only the tools a run needs are required, but
+.Xr pdftoppm 1
+always is: one cheap pass at 72 dpi, where a pixel is a point, gives
+the size of every page, mixed page sizes included.
+A page is then rendered at
+.Fl x
+times the target and downsampled to it, and is rendered once: the
+search for a quality under the
+.Fl s
+cap encodes it again, it does not render it again.
+The search is a binary one, from quality 15 up to the
+.Fl q
+ceiling, and keeps the highest quality whose file fits.
+.Pp
+Each page is written as
+.Ar dir Ns / Ns Ar name Ns - Ns Ar NN Ns .jpg ,
+its number padded with zeros to the width of the page count, two
+digits at least, and a one-page document as
+.Ar dir Ns / Ns Ar name Ns .jpg .
+Each file written is reported on stdout as
+.Ql path  WxH px  q=Q  N bytes .
+When no
+.Xr cjpeg 1
+is found, or the one found is not mozjpeg's, a note on stderr says
+the files will be larger.
+.Sh OPTIONS
+.Bl -tag -width "-q quality"
+.It Fl c
+Subsample the chroma 4:2:0, for smaller and softer files, instead of
+keeping it whole.
+.It Fl e Ar engine
+Rasterise with
+.Ql poppler ,
+the default, or with
+.Ql gs .
+.It Fl f Ar first
+The first page to write, a positive integer; the default is 1.
+.It Fl g
+Write grayscale JPEGs.
+.It Fl h
+Print the usage and exit.
+.It Fl i Ar icc
+The output ICC profile, handed to Ghostscript; it needs
+.Fl e Ar gs .
+.It Fl L
+Downsample in linear light, which suits photographs.
+.It Fl l Ar last
+The last page to write, a positive integer; the default is the last
+page.
+A range that selects no page is an error.
+.It Fl n Ar mode
+Whether a file name carries the page number:
+.Ql auto ,
+the default, numbers the pages of a document of more than one page;
+.Ql always
+numbers them all, and
+.Ql never
+none, which is refused when more than one page is selected.
+.It Fl o Ar dir
+The directory to write to, created if need be; the default is the
+current one.
+.It Fl p Ar name
+The file name before
+.Ql -NN.jpg ;
+the default is the PDF's own name, without its extension.
+.It Fl q Ar quality
+The JPEG quality, from 1 to 100, or with
+.Fl s
+the ceiling of the search; the default is 92.
+.It Fl s Ar size
+The largest file a page may make, in bytes, or with a unit:
+.Ql 500k ,
+.Ql 500kb
+and
+.Ql 1.5m
+are 1024 and 1048576 times the number.
+.It Fl w Ar px
+The longest edge, in pixels; the default is 2000.
+.It Fl x Ar n
+Render at
+.Ar n
+times the target, then downsample; a number of 1 or more, the default
+2.
+At 1, without
+.Fl L ,
+the page is encoded as rendered.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Every page selected was written.
+.It 1
+A failure: a tool missing, a page that cannot be rendered, named by its
+number, or an unreadable input.
+.It 2
+A usage error.
+.It 3
+Every page was written, but at least one stays over the
+.Fl s
+cap even at the lowest quality; each such file is named on stderr.
+.It 130
+Interrupted.
+.El
+.Sh EXAMPLES
+Every page at 2000 pixels on its longest edge, in the current
+directory:
+.Bd -literal -offset indent
+$ pdf2jpg report.pdf
+.Ed
+.Pp
+The first three pages, 1200 pixels and at most 300 KB each, into
+.Pa out :
+.Bd -literal -offset indent
+$ pdf2jpg -w 1200 -s 300k -l 3 -o out report.pdf
+.Ed
+.Pp
+A CMYK brochure, through Ghostscript with a profile of one's own:
+.Bd -literal -offset indent
+$ pdf2jpg -e gs -i sRGB.icc brochure.pdf
+.Ed
+.Sh SEE ALSO
+.Xr cjpeg 1 ,
+.Xr gs 1 ,
+.Xr magick 1 ,
+.Xr pdftoppm 1

@@ -1,0 +1,86 @@
+.Dd October 18, 2026
+.Dt DEFAULT-GATEWAY 1
+.Os
+.Sh NAME
+.Nm default-gateway
+.Nd print the gateway of the default route
+.Sh SYNOPSIS
+.Nm
+.Op Fl 4 | Fl 6
+.Op Fl is
+.Op Fl f Ar fib
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+prints the gateway of the default route, IPv4 unless
+.Fl 6 ,
+asking the routing table the way each system answers best:
+.Ic route -n get default
+on
+.Fx ,
+.Ic ip route show default
+on Linux.
+The first route listed is the one in use, and the one reported.
+.Pp
+A default route with no gateway, through a tunnel interface say, prints
+that interface in the gateway's place, in both columns with
+.Fl i ,
+so the output always has the same columns.
+An IPv6 link-local gateway is printed with its
+.Ql % Ns Ar interface
+scope on both systems, so the output can be used as it is: Linux leaves
+the scope out, and it is added.
+.Sh OPTIONS
+.Bl -tag -width "-f fib"
+.It Fl 4
+The IPv4 default route; the default.
+.It Fl 6
+The IPv6 default route.
+.It Fl f Ar fib
+Look in this FIB on
+.Fx ,
+or in this routing table on Linux, given by its number.
+.It Fl h
+Print the usage and exit.
+.It Fl i
+Print the outgoing interface after the gateway, separated by a space.
+.It Fl s
+Print no trailing newline.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+A default route was found.
+.It 1
+There is no default route of that family, or the platform is neither
+.Fx
+nor Linux.
+.It 2
+A usage error, a
+.Ar fib
+that is not a number included.
+.El
+.Sh EXAMPLES
+The IPv4 gateway, and the interface it is reached by:
+.Bd -literal -offset indent
+$ default-gateway -i
+192.0.2.1 em0
+.Ed
+.Pp
+The IPv6 gateway in FIB 1:
+.Bd -literal -offset indent
+$ default-gateway -6 -f 1
+fe80::1%em0
+.Ed
+.Pp
+Ping it:
+.Bd -literal -offset indent
+$ ping -c 1 "$(default-gateway)"
+.Ed
+.Sh SEE ALSO
+.Xr setfib 1 ,
+.Xr ip 8 ,
+.Xr route 8
+.Sh CAVEATS
+Only the first nexthop of a multipath route is reported.

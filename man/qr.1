@@ -1,0 +1,123 @@
+.Dd October 18, 2026
+.Dt QR 1
+.Os
+.Sh NAME
+.Nm qr
+.Nd encode text as a QR code, in the terminal or as an image
+.Sh SYNOPSIS
+.Nm
+.Op Fl l Ar level
+.Op Fl o Ar file
+.Op Fl s Ar size
+.Op Fl t Ar type
+.Op Ar text ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+encodes text as a QR code with
+.Xr qrencode 1 .
+The text is the arguments, joined by spaces, or else the standard
+input, its trailing newlines dropped.
+.Pp
+Without
+.Fl o ,
+the code is drawn in the terminal when the standard output is one, and
+written to it as SVG otherwise, so
+.Ql qr text > code.svg
+works.
+With
+.Fl o ,
+the type follows the file's extension:
+.Pa .svg ,
+.Pa .png ,
+.Pa .eps
+or
+.Pa .xpm ,
+in either case; any other needs
+.Fl t .
+SVG is written compact: one path, run-length encoded, with no XML
+header.
+.Sh OPTIONS
+.Bl -tag -width "-o file"
+.It Fl h
+Print the usage and exit.
+.It Fl l Ar level
+The error correction level:
+.Ql L ,
+.Ql M ,
+.Ql Q
+or
+.Ql H ,
+in either case.
+The default is
+.Ql Q .
+.It Fl o Ar file
+Write the code to
+.Ar file ,
+or to the standard output for
+.Ql - ,
+as SVG unless
+.Fl t
+says otherwise.
+.It Fl s Ar size
+The size of a module in pixels, for the image types; a positive whole
+number, 5 by default.
+.It Fl t Ar type
+The type to write, whatever the file is called: the images
+.Ql SVG ,
+.Ql PNG ,
+.Ql PNG32 ,
+.Ql EPS
+and
+.Ql XPM ,
+or, for a terminal,
+.Ql UTF8
+.Pq the default there ,
+.Ql UTF8i ,
+.Ql ANSIUTF8 ,
+.Ql ANSIUTF8i ,
+.Ql ANSI256UTF8 ,
+.Ql ANSI ,
+.Ql ANSI256 ,
+.Ql ASCII
+and
+.Ql ASCIIi ,
+spelt as here.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The code was written.
+.It 1
+There was nothing to encode,
+.Xr qrencode 1
+is missing, or it failed.
+.It 2
+A usage error: an unknown type or level, a size that is not a positive
+number, or a file whose type its name does not tell.
+.El
+.Sh EXAMPLES
+Show a URL in the terminal, to be read with a phone:
+.Bd -literal -offset indent
+$ qr https://example.org/
+.Ed
+.Pp
+Write it as a PNG, ten pixels a module, with the highest error
+correction:
+.Bd -literal -offset indent
+$ qr -o code.png -s 10 -l H https://example.org/
+.Ed
+.Pp
+Encode a file's contents as SVG:
+.Bd -literal -offset indent
+$ qr < wifi.txt > wifi.svg
+.Ed
+.Sh SEE ALSO
+.Xr qrencode 1
+.Sh CAVEATS
+The SVG options
+.Nm
+gives need
+.Xr qrencode 1
+4.1 or later.

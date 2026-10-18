@@ -1,0 +1,100 @@
+.Dd October 18, 2026
+.Dt ZFS-PRUNE-SNAPSHOTS 1
+.Os
+.Sh NAME
+.Nm zfs-prune-snapshots
+.Nd destroy all but the newest snapshots of datasets
+.Sh SYNOPSIS
+.Nm
+.Op Fl dnrv
+.Op Fl k Ar number
+.Ar dataset ...
+.Nm
+.Fl h | Fl V
+.Sh DESCRIPTION
+.Nm
+keeps the newest
+.Ar number
+snapshots of each dataset named, by creation time, and destroys every
+older one.
+The snapshots of a dataset are destroyed in one
+.Ql zfs destroy dataset@%snapshot
+range, from the oldest through the newest that goes, so a prune of
+hundreds of snapshots is one command, with one failure to report.
+A dataset with no more than
+.Ar number
+snapshots is left alone.
+.Pp
+Without
+.Fl r ,
+only the snapshots of the dataset itself are counted.
+With
+.Fl r ,
+each of its descendants is pruned as a dataset of its own, and keeps
+its own
+.Ar number .
+A dataset that fails does not stop the others.
+.Sh OPTIONS
+.Bl -tag -width "-k number"
+.It Fl d
+Ask for deferred destruction
+.Pq Ql zfs destroy -d ,
+so that a snapshot which cannot be destroyed at once, being held or
+cloned, is destroyed when it can be.
+.It Fl h
+Print the usage and exit.
+.It Fl k Ar number
+The newest snapshots to keep, a whole number; the default is 1, and 0
+destroys them all.
+.It Fl n
+A dry run:
+.Xr zfs 8
+is asked what it would destroy
+.Pq Ql zfs destroy -n -v ,
+and says so on stdout; nothing is destroyed.
+.It Fl r
+Also prune the descendants of each dataset.
+.It Fl V
+Print the version and exit.
+.It Fl v
+Report each dataset pruned, with how many snapshots were destroyed, up
+to which one, on stderr.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev PATH
+.Pa /sbin
+and
+.Pa /usr/sbin
+are added at its end, where
+.Xr zfs 8
+lives, since a Linux cron job's
+.Ev PATH
+and an unprivileged Linux user's leave them out.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Every dataset was pruned.
+.It 1
+The snapshots of some dataset could not be listed or destroyed; it is
+named on stderr.
+.It 2
+A usage error, a
+.Fl k
+that is not a whole number among them.
+.El
+.Sh EXAMPLES
+Keep the three newest snapshots of a dataset and of every one under it:
+.Bd -literal -offset indent
+# zfs-prune-snapshots -r -k 3 tank/backup
+.Ed
+.Pp
+What it would destroy, without destroying it:
+.Bd -literal -offset indent
+# zfs-prune-snapshots -n -v -k 3 tank/backup
+.Ed
+.Sh SEE ALSO
+.Xr zfs-snapshot 1 ,
+.Xr zfs 8 ,
+.Xr zfs-destroy 8

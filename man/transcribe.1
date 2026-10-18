@@ -1,0 +1,246 @@
+.Dd October 18, 2026
+.Dt TRANSCRIBE 1
+.Os
+.Sh NAME
+.Nm transcribe
+.Nd transcribe audio with Whisper on OVHcloud AI Endpoints
+.Sh SYNOPSIS
+.Nm
+.Op Fl dnqtw
+.Op Fl f Ar format
+.Op Fl l Ar lang
+.Op Fl m Ar model
+.Op Fl o Ar file
+.Op Fl p Ar prompt
+.Ar file ...
+.Nm
+.Op Fl t | Fl m Ar model
+.Fl M
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+sends each audio
+.Ar file
+to the Whisper models of OVHcloud AI Endpoints and prints its
+transcript on stdout, one file after the other.
+.Pp
+Before each request it announces on stderr the file, the length of its
+audio and what the request will cost, which is known in advance:
+Whisper is billed per second of audio.
+The rates are those of the OVHcloud catalogue, 0.00004083 EUR a second
+for
+.Ql whisper-large-v3 ,
+the default, and 0.00001278 EUR for
+.Ql whisper-large-v3-turbo .
+A model named with
+.Fl m
+has no known rate, and its cost is left out; so is the length, when
+.Xr ffprobe 1
+is not installed or cannot measure the file.
+.Pp
+Whisper resamples its input to 16 kHz mono, so
+.Nm
+does the same before the upload, with
+.Xr ffmpeg 1
+when it is installed, which loses no accuracy and makes the upload
+smaller; without ffmpeg, or with
+.Fl n ,
+the file is sent as it is.
+Either way the file is staged in a temporary directory first, so that
+an odd character in its name never reaches curl's form parsing.
+.Ss Credentials
+The API token is the first found of:
+.Bl -enum -compact
+.It
+.Ev OVH_AI_TOKEN ;
+.It
+.Ev OVH_AI_ENDPOINTS_API_KEY ,
+the name OVHcloud's own documentation uses;
+.It
+the first line of the file
+.Ev OVH_AI_TOKEN_FILE ;
+.It
+the password of the first
+.Ev OVH_AI_AUTHINFO_HOST
+entry in
+.Pa ~/.authinfo ,
+then in
+.Pa ~/.netrc ,
+where lines starting with
+.Ql #
+are skipped and a trailing backslash joins a line to the next;
+.It
+the
+.Ql api_key
+of the client named
+.Ql OVH
+in the
+.Xr aichat 1
+configuration
+.Ev AICHAT_CONFIG .
+.El
+.Pp
+One token serves every AI Endpoints model.
+It is handed to
+.Xr curl 1
+in a configuration file inside the temporary directory, readable by its
+owner alone, rather than on curl's command line, where
+.Xr ps 1
+would show it to every user.
+A token holding a character outside a bearer token's alphabet
+.Pq RFC 6750: letters, digits and Ql ._~+/=-
+is refused rather than escaped.
+.Sh OPTIONS
+.Bl -tag -width "-f format"
+.It Fl d
+Diarize: label the turns of each speaker.
+This implies
+.Fl f Ar verbose_json .
+.It Fl f Ar format
+The transcript's format:
+.Ql text ,
+the default,
+.Ql json ,
+.Ql verbose_json ,
+.Ql srt
+or
+.Ql vtt .
+.It Fl h
+Print the usage, with where the credentials are read from, and exit.
+.It Fl l Ar lang
+The language spoken, as an ISO 639-1 code such as
+.Ql en
+or
+.Ql fr ,
+a hint to the model.
+.It Fl M
+Print the model the other options select, and exit, without reading
+any file: for a caller recording how a transcript was made, without
+knowing the defaults.
+.It Fl m Ar model
+The model, by name.
+.It Fl n
+Upload the file as it is, without resampling it.
+.It Fl o Ar file
+Write the transcript to
+.Ar file
+instead of stdout.
+It takes one input only.
+The transcript is written to
+.Ar file
+only once the request has succeeded, so a failed run leaves an earlier
+transcript as it was.
+.It Fl p Ar prompt
+Bias the decoder towards names, jargon and spellings, given as one or
+two natural sentences.
+Whisper keeps only the last 224 tokens of a prompt, and a long or
+repetitive one can be echoed back in place of the transcript, so a
+prompt over 900 characters is refused.
+A prompt given is announced on stderr, since its words can appear in
+the transcript even when nobody said them.
+.It Fl q
+Quiet: announce neither the length and cost nor the prompt.
+.It Fl t
+Turbo: use
+.Ql whisper-large-v3-turbo ,
+roughly three times cheaper and faster, but prone to hallucinating on
+silence.
+.It Fl w
+Word-level timestamps.
+This implies
+.Fl f Ar verbose_json .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width OVH_AI_ENDPOINTS_API_KEY
+.It Ev AICHAT_CONFIG
+The aichat configuration a token may be read from; by default
+.Pa ~/.config/aichat/config.yaml .
+.It Ev OVH_AI_AUTHINFO_HOST
+The machine whose password is the token in
+.Pa ~/.authinfo
+and
+.Pa ~/.netrc ;
+by default
+.Ql oai.$OVH_AI_ENDPOINTS_DOMAIN .
+.It Ev OVH_AI_ENDPOINT
+The OpenAI-compatible API the request goes to; by default
+.Ql https://oai.$OVH_AI_ENDPOINTS_DOMAIN/v1 .
+.It Ev OVH_AI_ENDPOINTS_API_KEY
+The API token, when
+.Ev OVH_AI_TOKEN
+is not set.
+.It Ev OVH_AI_ENDPOINTS_DOMAIN
+The domain of AI Endpoints; by default
+.Ql endpoints.kepler.ai.cloud.ovh.net .
+.It Ev OVH_AI_TOKEN
+The API token.
+.It Ev OVH_AI_TOKEN_FILE
+A file whose first line is the token; by default
+.Pa ~/.config/ovhcloud/ai-token .
+.It Ev TMPDIR
+Where the temporary directory is made, instead of
+.Pa /tmp .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.config/ovhcloud/ai-token
+The token, on its first line.
+.It Pa ~/.authinfo , Pa ~/.netrc
+The token, as the password of the AI Endpoints host.
+.It Pa ~/.config/aichat/config.yaml
+The token, as the
+.Ql api_key
+of the client named
+.Ql OVH .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Every file was transcribed.
+.It 1
+A failure: no token, a file that cannot be read, curl or ffmpeg
+failing, or an HTTP error from the API, whose answer is shown on
+stderr.
+.It 2
+A usage error: an unknown format, a prompt over 900 characters, or
+.Fl o
+with more than one file.
+.It 130
+Interrupted.
+.El
+.Sh EXAMPLES
+An interview in French, its names spelled right:
+.Bd -literal -offset indent
+$ transcribe -l fr -p "Entretien avec Mme Duval, \(`a Lyon." interview.m4a
+.Ed
+.Pp
+Word-level timestamps into a file:
+.Bd -literal -offset indent
+$ transcribe -w -o talk.json talk.wav
+.Ed
+.Pp
+The model a script's transcripts were made with:
+.Bd -literal -offset indent
+$ transcribe -t -M
+whisper-large-v3-turbo
+.Ed
+.Sh SEE ALSO
+.Xr curl 1 ,
+.Xr ffmpeg 1 ,
+.Xr ffprobe 1 ,
+.Xr vocalise 1
+.Sh CAVEATS
+.Fl f Ar srt
+and
+.Fl f Ar vtt
+are refused by the API today, with HTTP 400, though it advertises
+them.
+.Pp
+.Nm
+needs
+.Xr curl 1 :
+.Xr fetch 1 ,
+which
+.Fx
+has in its base system, cannot upload a multipart form.

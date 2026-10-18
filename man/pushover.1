@@ -1,0 +1,128 @@
+.Dd October 18, 2026
+.Dt PUSHOVER 1
+.Os
+.Sh NAME
+.Nm pushover
+.Nd send a notification through the Pushover API
+.Sh SYNOPSIS
+.Nm
+.Op Fl v
+.Op Fl t Ar title
+.Oo Ar user : Oc Ns Ar app
+.Ar message
+.Nm
+.Fl h | Fl V
+.Sh DESCRIPTION
+.Nm
+sends
+.Ar message
+as a Pushover notification from the application
+.Ar app
+to the user
+.Ar user ,
+both named in the configuration file
+.Pq Sx FILES ,
+which holds their tokens.
+Without
+.Ar user ,
+the first user the file lists is the one notified.
+.Pp
+In the message,
+.Ql %{HOST}
+becomes the short host name,
+.Ql %{HOSTNAME}
+the full one, and any other
+.Ql %{...}
+is removed.
+Backslashes and dollar signs arrive as typed.
+.Pp
+The tokens are handed to
+.Xr curl 1
+on its standard input, never on its command line, so they do not
+appear in a process listing.
+The message and the title are sent as form fields that curl never
+reads as a file name: a message starting with
+.Ql @
+is sent as text.
+.Sh OPTIONS
+.Bl -tag -width "-t title"
+.It Fl h
+Print the usage and exit.
+.It Fl t Ar title
+The title of the notification.
+.It Fl V
+Print the version and exit.
+.It Fl v
+Once the notification is sent, report the request id Pushover gave
+it, on stderr.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width PUSHOVER_CONFIG
+.It Ev PUSHOVER_CONFIG
+The configuration file, instead of
+.Pa ~/.pushover .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.pushover
+The tokens, in a YAML file of two levels: an
+.Ql app\&:
+section naming each application with its token, and a
+.Ql user\&:
+section naming each user with its key.
+.Bd -literal -offset indent
+app:
+  myapp:  <application token>
+user:
+  me:     <user key>
+.Ed
+.Pp
+A value may be quoted, with single or double quotes, and a
+.Ql #
+starts a comment.
+A token must be letters and digits only; any other is refused.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The notification was sent.
+.It 1
+It was not: the configuration file is missing, the user or the
+application is not in it, a token is malformed, the message is empty,
+curl failed, or the API refused it
+.Po
+with its error, or
+.Dq message limit reached
+for HTTP 429
+.Pc .
+.It 2
+A usage error, an empty
+.Ar user
+or
+.Ar app
+in
+.Ar user : Ns Ar app
+among them.
+.El
+.Sh EXAMPLES
+Tell the default user that a backup is done, naming the host:
+.Bd -literal -offset indent
+$ pushover -t backup myapp 'done on %{HOST}'
+.Ed
+.Pp
+Notify the user
+.Ql me
+from
+.Ql myapp ,
+and report the request id:
+.Bd -literal -offset indent
+$ pushover -v me:myapp 'disk almost full'
+.Ed
+.Sh SEE ALSO
+.Xr curl 1
+.Pp
+.Lk https://pushover.net/api
+.Sh CAVEATS
+Only the two-level layout shown in
+.Sx FILES
+is understood; the file is not read as YAML at large.

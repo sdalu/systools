@@ -1,0 +1,121 @@
+.Dd October 18, 2026
+.Dt COMPOSITOR-PICOM 1
+.Os
+.Sh NAME
+.Nm compositor-picom
+.Nd run the picom compositor at a chosen effect level
+.Sh SYNOPSIS
+.Nm
+.Op Fl f
+.Cm start | off | status | tear | light | full
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+runs
+.Xr picom 1 ,
+the X11 compositor, at one of three effect levels, each a
+.Xr picom 1
+configuration of the user's own:
+.Bl -tag -width "light"
+.It Cm tear
+Tear-free only
+.Pq vsync ,
+the cheapest.
+.It Cm light
+Open and close fades as well.
+.It Cm full
+Shadows and inactive transparency as well.
+.El
+.Pp
+The level last chosen,
+.Cm off
+included, is remembered, and
+.Cm start
+restores it, so a window manager can run
+.Ql compositor-picom start
+at login; with no level remembered,
+.Cm start
+runs
+.Cm light .
+.Cm off
+stops the compositor, and
+.Cm status
+says whether it runs, and at which level.
+Only this user's
+.Xr picom 1
+is seen and stopped.
+.Pp
+Compositing on a software-rendered X server
+.Pq llvmpipe, softpipe: no usable DRI3 or glamor
+leaves black rectangles that never refresh, so a level is refused there
+unless
+.Fl f .
+The renderer is asked of
+.Xr glxinfo 1 ;
+without it, the renderer is not checked, and
+.Nm
+says so.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl f
+Force: composite even on a software-rendered X server, or one
+.Xr glxinfo 1
+cannot reach.
+.It Fl h
+Print the usage and exit.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width XDG_CONFIG_HOME
+.It Ev XDG_CONFIG_HOME
+The directory holding
+.Pa picom/ ,
+instead of
+.Pa ~/.config .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.config/picom/ Ns Ar level Ns Pa .conf
+The
+.Xr picom 1
+configuration of each level:
+.Pa tear.conf ,
+.Pa light.conf
+and
+.Pa full.conf .
+A level whose file is missing is refused.
+.It Pa ~/.config/picom/level
+The level last chosen.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Success; for
+.Cm status ,
+.Xr picom 1
+is running.
+.It 1
+Failure; for
+.Cm status ,
+.Xr picom 1
+is not running.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+In
+.Xr i3 1 ,
+the level last chosen at login:
+.Bd -literal -offset indent
+exec --no-startup-id compositor-picom start
+.Ed
+.Pp
+The cheapest level, and the answer:
+.Bd -literal -offset indent
+$ compositor-picom tear
+$ compositor-picom status
+running (level: tear)
+.Ed
+.Sh SEE ALSO
+.Xr glxinfo 1 ,
+.Xr picom 1

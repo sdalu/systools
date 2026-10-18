@@ -1,0 +1,116 @@
+.Dd October 18, 2026
+.Dt IS-DOCKED 1
+.Os
+.Sh NAME
+.Nm is-docked
+.Nd tell whether this laptop sits in its dock
+.Sh SYNOPSIS
+.Nm
+.Op Fl qv
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+tells whether a laptop sits in its dock.
+A USB-C dock does not announce itself, so docked is inferred from three
+things a dock provides at once, and means all three: external power, a
+USB network interface (the dock's), and a connected external screen,
+one that is not an internal panel
+.Pq eDP, LVDS or DSI .
+.Nm
+prints
+.Ql docked=acline,if-usb,screen
+and exits 0 when all three are met, and
+.Ql undocked
+and exits 1 otherwise.
+.Pp
+Each criterion is read where the system keeps it.
+On
+.Fx :
+.Bl -bullet -offset indent
+.It
+power is the
+.Va hw.acpi.acline
+sysctl;
+.It
+the network interface is any
+.Xr ue 4
+interface, which every USB ethernet driver attaches as;
+.It
+the screens are the connectors drm-kmod lists as
+.Va sys.class.drm.card Ns Ar N Ns Va - Ns Ar connector Ns Va .status
+sysctls, or, without them, what
+.Xr xrandr 1
+reports under X.
+Without either, the screen cannot be checked, which is said on stderr,
+and counts as no screen.
+.El
+.Pp
+On Linux, from sysfs alone:
+.Bl -bullet -offset indent
+.It
+power is a supply of type Mains or USB that is online under
+.Pa /sys/class/power_supply ,
+a USB supply counting because a USB-C dock powers the laptop over USB;
+.It
+the network interface is one under
+.Pa /sys/class/net
+whose device sits on USB, Wi-Fi interfaces excepted;
+.It
+the screens are the connectors under
+.Pa /sys/class/drm .
+.El
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h
+Print the usage and exit.
+.It Fl q
+Quiet: print nothing, and answer with the exit status only.
+.It Fl v
+Say on stderr, for each criterion, whether it was met and by what: the
+supply, the interface, the connector.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev DISPLAY
+On
+.Fx
+without drm-kmod connectors,
+.Xr xrandr 1
+is asked only when it is set.
+.It Ev SYSFS
+The root of sysfs on Linux, instead of
+.Pa /sys .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Docked.
+.It 1
+Not docked, or the platform is neither
+.Fx
+nor Linux.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+Turn the internal panel off when the laptop is docked:
+.Bd -literal -offset indent
+$ is-docked -q && screen-extend -p off
+.Ed
+.Pp
+See which criterion is missing:
+.Bd -literal -offset indent
+$ is-docked -v
+.Ed
+.Sh SEE ALSO
+.Xr screen-extend 1 ,
+.Xr xrandr 1 ,
+.Xr sysctl 8
+.Sh CAVEATS
+The dock is recognised by what it provides, not by what it is: any USB
+network interface counts, and a dock whose network interface is PCIe
+over Thunderbolt does not.
+.Pp
+.Xr acpi_dock 4
+is not consulted: it covers ACPI docking stations, not USB-C docks.

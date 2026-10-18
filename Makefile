@@ -12,15 +12,17 @@ NAME       = systools
 
 PREFIX    ?= /usr/local
 BINDIR     = $(PREFIX)/bin
+MANDIR    ?= $(PREFIX)/share/man
 LIBDIR     = $(PREFIX)/lib/systools
 DESTDIR   ?=
 INSTALL   ?= install
 # The shell the scripts are run under by `tests` and `check-syntax`.
 SH        ?= sh
 SHELLCHECK?= shellcheck
+MANDOC    ?= mandoc
 
-.PHONY: help check check-syntax check-lint check-shared tests install uninstall \
-	install-links uninstall-links
+.PHONY: help check check-syntax check-lint check-shared check-man tests \
+	install uninstall install-links uninstall-links
 
 # First target, so a bare `make` runs it. .DEFAULT_GOAL and .MAIN would
 # each say so in one make only; being first says it in both.
@@ -42,13 +44,15 @@ help:						## show this help (the default)
 	@echo 'Variables (current value):'
 	@printf '  %-16s %s\n' \
 	    PREFIX     '$(PREFIX)' \
+	    MANDIR     '$(MANDIR)  (the pages go in man1 under it)' \
 	    DESTDIR    '$(DESTDIR)  (staging prefix for packaging)' \
 	    SH         '$(SH)  (the shell tests run the scripts under, e.g. dash)' \
-	    SHELLCHECK '$(SHELLCHECK)'
+	    SHELLCHECK '$(SHELLCHECK)' \
+	    MANDOC     '$(MANDOC)'
 	@echo ''
 	@echo 'There is no build target: the scripts run from bin/ as they are.'
 
-check: check-syntax check-lint check-shared	## preflight: every script parses, lints clean, shares one copy
+check: check-syntax check-lint check-shared check-man	## preflight: every script parses, lints clean, shares one copy, has its page
 check-syntax:					## every script and test parses under SH
 	@for f in bin/* tests/*.sh tests/fake/*; do \
 	    $(SH) -n "$$f" || { echo "make: $$f does not parse" >&2; exit 1; }; \
@@ -62,12 +66,19 @@ check-lint:					## shellcheck finds nothing in the scripts or the tests
 check-shared:					## transcribe and vocalise still share the same functions
 	@sh tests/check-shared.sh
 
+check-man:					## every tool has a man page, well-formed mdoc offering exactly its options
+	@command -v $(MANDOC) > /dev/null || \
+	    { echo 'make: $(MANDOC) not found (in FreeBSD base; apt install mandoc)' >&2; \
+	      exit 1; }
+	@MANDOC='$(MANDOC)' sh tests/check-man.sh
+
 tests:						## run the suite: every script, against stand-ins, under SH
 	@SH='$(SH)' sh tests/run.sh
 
-install:					## copy the scripts (and lib/systools, if any) under PREFIX
-	$(INSTALL) -d $(DESTDIR)$(BINDIR)
+install:					## copy the scripts, their man pages (and lib/systools, if any) under PREFIX
+	$(INSTALL) -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(MANDIR)/man1
 	$(INSTALL) -m 755 bin/* $(DESTDIR)$(BINDIR)
+	$(INSTALL) -m 644 man/*.1 $(DESTDIR)$(MANDIR)/man1
 	if [ -d lib/systools ]; then \
 	    $(INSTALL) -d $(DESTDIR)$(LIBDIR) && \
 	    $(INSTALL) -m 644 lib/systools/* $(DESTDIR)$(LIBDIR); \
@@ -75,17 +86,22 @@ install:					## copy the scripts (and lib/systools, if any) under PREFIX
 
 uninstall:					## remove what install put down
 	for f in bin/*; do rm -f "$(DESTDIR)$(BINDIR)/$${f##*/}"; done
+	for f in man/*.1; do rm -f "$(DESTDIR)$(MANDIR)/man1/$${f##*/}"; done
 	if [ -d lib/systools ]; then \
 	    for f in lib/systools/*; do rm -f "$(DESTDIR)$(LIBDIR)/$${f##*/}"; done; \
 	    [ ! -d $(DESTDIR)$(LIBDIR) ] || rmdir $(DESTDIR)$(LIBDIR); \
 	fi
 
-install-links:					## symlink the scripts under PREFIX instead (development); install does not
-	$(INSTALL) -d $(BINDIR)
+install-links:					## symlink the scripts and pages under PREFIX instead (development); install does not
+	$(INSTALL) -d $(BINDIR) $(MANDIR)/man1
 	for f in "$$(pwd)"/bin/*; do ln -sf "$$f" $(BINDIR)/; done
+	for f in "$$(pwd)"/man/*.1; do ln -sf "$$f" $(MANDIR)/man1/; done
 
 uninstall-links:				## remove the symlinks install-links made, and nothing else
-	for f in "$$(pwd)"/bin/*; do \
-	    l="$(BINDIR)/$${f##*/}"; \
+	for f in "$$(pwd)"/bin/* "$$(pwd)"/man/*.1; do \
+	    case $$f in \
+	    *.1) l="$(MANDIR)/man1/$${f##*/}" ;; \
+	    *) l="$(BINDIR)/$${f##*/}" ;; \
+	    esac; \
 	    if [ -L "$$l" ] && [ "$$(readlink "$$l")" = "$$f" ]; then rm -f "$$l"; fi; \
 	done

@@ -1,0 +1,125 @@
+.Dd October 18, 2026
+.Dt ZFS-SNAPSHOT 1
+.Os
+.Sh NAME
+.Nm zfs-snapshot
+.Nd take today's dated snapshot of a dataset and expire old ones
+.Sh SYNOPSIS
+.Nm
+.Op Fl Dnrv
+.Op Fl p Ar profile
+.Op Fl t Ar date
+.Ar dataset
+.Nm
+.Fl h | Fl V
+.Sh DESCRIPTION
+.Nm
+is meant to run once a day, from
+.Xr cron 8 .
+It takes the snapshot
+.Ar dataset Ns @ Ns Ar YYYY-MM-DD
+for today, then destroys the snapshot taken a week ago, unless that
+day was a Sunday, and every snapshot six months old.
+So a weekday's snapshot lives a week, and a Sunday's six months.
+.Pp
+Six months before is taken with the day clamped to the length of the
+month it lands in: 31 August less six months is 28 February.
+Consecutive days therefore do not map to consecutive days: 2026-02-28
+maps to 2025-08-28, and 2026-03-01 to 2025-09-01.
+Each run destroys every date the six-month mark has moved past since
+the day before, not one date, so no snapshot falls between two runs.
+.Pp
+The snapshot comes first, and when it fails nothing is destroyed, so an
+old snapshot never goes before its replacement exists.
+A snapshot already taken today is not an error, and the expiry still
+runs, so running again is harmless.
+A snapshot is destroyed only when it exists; a destroy that fails does
+not stop the others.
+Dates are worked out by arithmetic, not by
+.Xr date 1 ,
+which is asked for nothing but today.
+.Sh OPTIONS
+.Bl -tag -width "-p profile"
+.It Fl D
+Report the commands run and the snapshots there were none of to
+destroy, as well as what
+.Fl v
+reports.
+.It Fl h
+Print the usage and exit.
+.It Fl n
+A dry run: show each
+.Xr zfs 8
+command that would change something, and run none.
+.It Fl p Ar profile
+The snapshotting profile; the only one, and the default, is
+.Ql default ,
+the rule above.
+.It Fl r
+Take and destroy the snapshots recursively, the dataset's descendants
+with it.
+.It Fl t Ar date
+Act as if today were
+.Ar date ,
+given as
+.Ar YYYY-MM-DD ,
+for instance to replay a day the job did not run.
+.It Fl V
+Print the version and exit.
+.It Fl v
+Report each snapshot created and destroyed.
+.El
+.Pp
+Reports go to stderr.
+.Sh ENVIRONMENT
+.Bl -tag -width Ds
+.It Ev PATH
+.Pa /sbin
+and
+.Pa /usr/sbin
+are added at its end, where
+.Xr zfs 8
+lives, since a Linux cron job's
+.Ev PATH
+and an unprivileged Linux user's leave them out.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Today's snapshot exists, and every snapshot due was destroyed.
+.It 1
+The dataset does not exist, or the snapshot could not be taken, and
+nothing was destroyed; or a snapshot due could not be destroyed, after
+the others were tried.
+.It 2
+A usage error: a profile other than
+.Ql default ,
+or a
+.Fl t
+that is not a date, among them.
+.El
+.Sh EXAMPLES
+The daily job, in root's crontab:
+.Bd -literal -offset indent
+15 3 * * * zfs-snapshot -r tank/home
+.Ed
+.Pp
+What the run of 1 March 2026 would do, done again by hand:
+.Bd -literal -offset indent
+# zfs-snapshot -n -t 2026-03-01 tank/home
+.Ed
+.Sh SEE ALSO
+.Xr zfs-prune-snapshots 1 ,
+.Xr zfs 8 ,
+.Xr zfs-destroy 8 ,
+.Xr zfs-snapshot 8
+.Sh CAVEATS
+Each run expires only what fell due since the day before: a day the
+job did not run leaves that day's expiries undone, and
+.Ql zfs-snapshot -t YYYY-MM-DD dataset
+replays it.
+.Pp
+OpenZFS has a page of the same name in section 8, for
+.Ql zfs snapshot ;
+.Ql man 1 zfs-snapshot
+names this one.

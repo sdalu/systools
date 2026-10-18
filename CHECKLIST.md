@@ -9,8 +9,9 @@ command or a question with a yes or a no at the end of it.
 Run in order. A red gate is answered before anything else, and the
 answer is sometimes that the checker is wrong rather than the file.
 
-- [ ] `make check` -- preflight: every script and test parses, and
-      shellcheck finds nothing.
+- [ ] `make check` -- preflight: every script and test parses,
+      shellcheck finds nothing, and every tool has a man page that lints
+      clean and offers exactly the options its `getopts` takes.
 - [ ] `make tests` -- the suite, the scripts under `sh`.
 - [ ] `make tests SH=dash` -- **if this round touched a script and dash
       is at hand.** Debian's `/bin/sh` refuses what FreeBSD sh lets pass.
@@ -27,8 +28,11 @@ answer is sometimes that the checker is wrong rather than the file.
 Re-read each against what this round changed: a document that was true
 this morning is a claim, not a fact.
 
-- [ ] The header comment of each script touched, and its `usage()` --
-      do they still name exactly the options its `getopts` takes?
+- [ ] The header comment of each script touched, its `usage()` and its
+      page in `man/` -- do they still name exactly the options its
+      `getopts` takes? `make check` holds the page's option letters to
+      it, not what the page says they do: an option changes in three
+      places or none. A new tool gets its page in the same commit.
 - [ ] `README.md` -- does the table still list every tool in `bin/`,
       with what it needs? Is each known shortfall still short, and is a
       new one there?

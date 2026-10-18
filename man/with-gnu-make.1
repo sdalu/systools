@@ -1,0 +1,118 @@
+.Dd October 18, 2026
+.Dt WITH-GNU-MAKE 1
+.Os
+.Sh NAME
+.Nm with-gnu-make
+.Nd run a command with GNU make exposed as make
+.Sh SYNOPSIS
+.Nm
+.Ar command
+.Op Ar arg ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+runs
+.Ar command
+with GNU make answering to the name
+.Ic make ,
+and the C compiler to the name
+.Ic gcc
+where there is no
+.Ic gcc .
+It is meant for Python source distributions that build a bundled C
+library, which call
+.Ic make
+and
+.Ic gcc
+by those names: on
+.Fx ,
+.Ic make
+is BSD make, which cannot read a GNU makefile, and there is no
+.Ic gcc
+at all, so the nested build fails, often with a warning only, the
+breakage showing later as a missing
+.Pa .a
+or
+.Pa .o
+file.
+.Pp
+.Nm
+writes shims, small scripts that run the real tool by its full path,
+into a directory it puts first on
+.Ev PATH ,
+then replaces itself with the command, so that any build the command
+starts finds them.
+A shim is written only where it is needed:
+.Ic make
+when the
+.Ic make
+on
+.Ev PATH
+is not GNU make, as its
+.Fl -version
+tells,
+and
+.Ic gcc
+when there is none.
+A shim left by an earlier run that is no longer needed is removed, so
+it does not shadow a
+.Ic make
+that has become usable.
+Where both are already there, as on a GNU/Linux system with
+.Ic gcc ,
+the command is run unchanged.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h , Fl -help
+Print the usage, with the values of the variables below, and exit.
+Only the first argument is taken for an option; every other is the
+command's.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width SHIM_DIR
+.It Ev GNU_MAKE
+The GNU make to shim in as
+.Ic make ,
+instead of
+.Ic gmake .
+.It Ev SHIM_CC
+The C compiler to shim in as
+.Ic gcc ,
+instead of
+.Ic cc .
+.It Ev SHIM_DIR
+The directory of the shims, instead of
+.Pa ${XDG_CACHE_HOME:-~/.cache}/with-gnu-make/bin .
+.El
+.Sh EXIT STATUS
+The exit status of
+.Ar command ;
+1 when a shim is needed and cannot be made: no
+.Ev GNU_MAKE
+found, or one that is not GNU make, no
+.Ev SHIM_CC
+found, or a target the shim cannot name
+.Pq Sx CAVEATS ;
+2 for a usage error, a missing
+.Ar command
+included.
+.Sh EXAMPLES
+Install a Python package that builds LuaJIT:
+.Bd -literal -offset indent
+$ with-gnu-make uv pip install lupa
+.Ed
+.Pp
+Run a tool whose dependencies build C code on first use:
+.Bd -literal -offset indent
+$ with-gnu-make uvx --from openhands-agent-server==1.44.0 agent-server
+.Ed
+.Sh SEE ALSO
+.Xr cc 1 ,
+.Xr gmake 1 ,
+.Xr make 1
+.Sh CAVEATS
+A shim's target is written between single quotes, so a path holding
+one is refused; so is a target inside
+.Ev SHIM_DIR ,
+a shim of a shim.

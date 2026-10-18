@@ -1,0 +1,472 @@
+.Dd October 18, 2026
+.Dt VOCALISE 1
+.Os
+.Sh NAME
+.Nm vocalise
+.Nd speak text with OVHcloud Riva, or with piper and espeak-ng locally
+.Sh SYNOPSIS
+.Nm
+.Op Fl Lpq
+.Op Fl A Ar output
+.Op Fl b Ar spec
+.Op Fl E Ar engine
+.Op Fl f Ar format
+.Op Fl l Ar lang
+.Op Fl m Ar model
+.Op Fl o Ar file
+.Op Fl r Ar rate
+.Op Fl s Ar speed
+.Op Fl v Ar voice
+.Op Ar text ...
+.Nm
+.Fl D
+.Op Fl q
+.Op Fl E Ar engine
+.Op Fl l Ar lang
+.Nm
+.Fl d
+.Fl E Ar engine
+.Op Fl q
+.Op Fl l Ar lang
+.Op Ar voice ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+turns text into speech, and plays it or writes it as audio.
+The text is the operands, joined by spaces, or stdin when there are
+none or the one operand is
+.Ql - ;
+whitespace alone is refused.
+.Pp
+Three engines can speak it:
+.Bl -tag -width espeak
+.It Cm riva
+The Riva voices of OVHcloud AI Endpoints, the best of the three, over
+the network.
+They speak English, German, Spanish and Italian, and nothing else:
+OVHcloud publishes no French voice.
+Each language is its own host,
+.Ql https://<model>.$OVH_AI_ENDPOINTS_DOMAIN/api/v1/tts/text_to_audio .
+Riva refuses a request whose normalised text is over 2000 characters,
+and normalising expands the text, so a long one is split on sentence
+boundaries, then clause, then word boundaries, into pieces of at most
+1200 characters, fewer at a high sample rate or a slow speed, and the
+audio of the pieces is joined.
+A piece that is still too big, in text or in the audio it returns, is
+split again at half the size.
+Riva costs nothing in the OVHcloud catalogue; only its rate limit
+applies.
+.It Cm piper
+Neural voices, offline, from the voices installed in
+.Ev PIPER_VOICE_PATH .
+Both generations of piper are recognised, the original binary and
+piper1-gpl, whose options differ.
+.It Cm espeak
+Formant synthesis by
+.Xr espeak-ng 1
+.Pq or Xr espeak 1 ,
+robotic but intelligible, in about a hundred languages.
+.El
+.Pp
+.Fl E
+names one of them, or a selector that tries them in an order and takes
+the first that can speak the language:
+.Bl -tag -width offline
+.It Cm auto
+riva, then piper, then espeak-ng: the best voice first.
+.It Cm offline
+piper, then espeak-ng, and riva only if neither knows the language: a
+preference for staying local.
+.It Cm local
+piper, then espeak-ng, and failure rather than the network: the text
+never leaves the machine.
+.El
+.Pp
+A
+.Fl v
+naming a
+.Pa .onnx
+file means piper, under any selector.
+.Pp
+Every engine produces WAV.
+Riva synthesises at the rate asked for, and its WAV header, which
+always claims 16 kHz, is written afresh; the local engines keep their
+own rate, and
+.Xr ffmpeg 1
+resamples them to
+.Fl r ,
+or, without ffmpeg, they keep it and say so when
+.Fl r
+was given.
+Any format but WAV is then transcoded: by ffmpeg when it is installed,
+otherwise by
+.Xr lame 1 ,
+.Xr oggenc 1 ,
+.Xr opusenc 1
+or
+.Xr flac 1 .
+.Pp
+Without
+.Fl o ,
+the audio is played when stdout is a terminal, and written to stdout
+otherwise.
+On stderr,
+.Nm
+announces the length of the text, the duration of the audio, its rate
+and format, and the engine and voice that spoke it.
+.Ss Credentials
+Riva's API token is the first found of:
+.Bl -enum -compact
+.It
+.Ev OVH_AI_TOKEN ;
+.It
+.Ev OVH_AI_ENDPOINTS_API_KEY ,
+the name OVHcloud's own documentation uses;
+.It
+the first line of the file
+.Ev OVH_AI_TOKEN_FILE ;
+.It
+the password of the first
+.Ev OVH_AI_AUTHINFO_HOST
+entry in
+.Pa ~/.authinfo ,
+then in
+.Pa ~/.netrc ,
+where lines starting with
+.Ql #
+are skipped and a trailing backslash joins a line to the next;
+.It
+the
+.Ql api_key
+of the client named
+.Ql OVH
+in the
+.Xr aichat 1
+configuration
+.Ev AICHAT_CONFIG .
+.El
+.Pp
+One token serves every AI Endpoints model.
+It is handed to
+.Xr curl 1
+in a configuration file inside the temporary directory, readable by its
+owner alone, rather than on curl's command line, where
+.Xr ps 1
+would show it to every user.
+A token holding a character outside a bearer token's alphabet
+.Pq RFC 6750: letters, digits and Ql ._~+/=-
+is refused rather than escaped.
+The local engines need no token.
+.Ss Downloading piper voices
+.Fl D
+lists the voices that can be downloaded for
+.Fl l ,
+as
+.Ar engine Ns / Ns Ar voice ,
+from the index of the piper voice collection
+.Pq Ev PIPER_VOICE_URL ;
+piper is the only engine with one.
+.Fl d
+installs the voices named into the first writable directory of
+.Ev PIPER_VOICE_PATH ,
+creating its first entry when none is, and speaks nothing.
+A voice is named by its full key, as
+.Fl D
+prints it
+.Pq Ql fr_FR-siwis-medium ,
+or, within the language of
+.Fl l ,
+by the short
+.Ql siwis-medium
+or
+.Ql siwis ;
+a name that fits more than one voice is refused, with the voices it
+fits.
+With no voice named,
+.Fl d
+installs every voice of
+.Fl l ,
+or every voice the engine has when
+.Fl l
+is not given: gigabytes, so the size is announced first, and voices
+already installed are skipped, which makes an interrupted run
+resumable.
+Each voice is its
+.Pa .onnx
+model and its
+.Pa .onnx.json ,
+checked against the md5 the index gives when
+.Xr jq 1
+is installed, and installed only once both have arrived.
+.Sh OPTIONS
+.Bl -tag -width "-E engine"
+.It Fl A Ar output
+Where
+.Fl p
+sends the sound:
+.Cm auto ,
+the default,
+.Cm sndio ,
+.Cm oss ,
+.Cm pulse
+or
+.Cm alsa .
+.Cm auto
+tries sndio, then oss, on
+.Fx ,
+and pulse, then alsa, on Linux.
+It never tries pulse on
+.Fx ,
+where PulseAudio sits on top of OSS
+with a mute of its own, so a muted sink swallows the sound while every
+command reports success.
+An output named is used or fails, with no fallback.
+sndio plays with
+.Xr aucat 1
+and honours
+.Ev AUDIODEVICE ,
+oss plays to
+.Ev VOCALISE_OSS_DEVICE ,
+pulse with
+.Xr paplay 1 ,
+ffplay or cvlc, alsa with
+.Xr aplay 1 ;
+ffmpeg can drive any of them.
+.It Fl b Ar spec
+The encoder setting: a bitrate for the lossy formats, as
+.Ql 128k
+or
+.Ql 128 ,
+or the compression level 0 to 8 for flac.
+Without it each encoder uses its own default, which is the safer
+choice: libvorbis has no 128k mode at 22 kHz mono, and refuses rather
+than clamping.
+It has no effect on WAV, and says so.
+.It Fl D
+List the voices that can be downloaded for
+.Fl l ,
+and exit.
+.Fl E
+may be left out, or name piper or a selector; naming riva or espeak is
+an error, since piper is the only engine with voices to download.
+.It Fl d
+Download the voices named, or every voice of the language, and exit
+.Pq Sx Downloading piper voices .
+.Fl E
+must name one engine; a selector does not say which engine a voice is
+for.
+.It Fl E Ar engine
+The engine:
+.Cm auto ,
+.Cm offline ,
+.Cm local ,
+.Cm riva ,
+.Cm piper
+or
+.Cm espeak ;
+by default
+.Ev VOCALISE_ENGINE ,
+or
+.Cm auto .
+.It Fl f Ar format
+The format written:
+.Ql wav ,
+.Ql flac ,
+.Ql mp3 ,
+.Ql ogg ,
+.Ql opus ,
+or any other extension ffmpeg can mux.
+Without it the format is the extension of
+.Fl o ,
+and WAV when there is none.
+.It Fl h
+Print the usage, with the voice path and where the credentials are
+read from, and exit.
+.It Fl L
+List the voices the chosen engine has for
+.Fl l ,
+and exit.
+.It Fl l Ar lang
+The language, by default
+.Ql en :
+.Ql en ,
+.Ql de ,
+.Ql es
+or
+.Ql it
+on riva, and anything the local engines know elsewhere, such as
+.Ql fr ,
+.Ql pt-br
+or
+.Ql nl .
+.It Fl m Ar model
+The Riva model, instead of the one for
+.Fl l .
+.It Fl o Ar file
+Write the audio to
+.Ar file ,
+or to stdout when it is
+.Ql - .
+.It Fl p
+Play the audio.
+With
+.Fl o
+it is written too; what is played is the lossless audio, whatever
+.Fl f
+writes.
+.It Fl q
+Quiet: announce nothing on stderr.
+.It Fl r Ar rate
+The sample rate, in Hz, from 8000 to 48000; 22050 by default.
+.It Fl s Ar speed
+The speaking rate, as a multiplier
+.Pq Ql 0.8
+or a percentage
+.Pq Ql 80% ,
+from 25% to 250%: SSML prosody on riva, which therefore takes plain
+text rather than markup of one's own, words per minute on espeak-ng,
+and the length scale on piper, so the same
+.Fl s
+means the same everywhere.
+.It Fl v Ar voice
+The voice, as the engine names it.
+On riva its language prefix is optional, so
+.Ql Male-1
+and
+.Ql English-US.Male-1
+are the same voice.
+On espeak it is a voice such as
+.Ql fr-be .
+On piper it is a full key, the short
+.Ql tom-medium
+or
+.Ql tom
+within the language, or the path of a
+.Pa .onnx
+model.
+.Fl L
+lists them.
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width OVH_AI_ENDPOINTS_API_KEY
+.It Ev AICHAT_CONFIG
+The aichat configuration a token may be read from; by default
+.Pa ~/.config/aichat/config.yaml .
+.It Ev AUDIODEVICE
+The sndio device sound is played to.
+.It Ev OVH_AI_AUTHINFO_HOST
+The machine whose password is the token in
+.Pa ~/.authinfo
+and
+.Pa ~/.netrc ;
+by default
+.Ql oai.$OVH_AI_ENDPOINTS_DOMAIN .
+.It Ev OVH_AI_ENDPOINTS_API_KEY
+The API token, when
+.Ev OVH_AI_TOKEN
+is not set.
+.It Ev OVH_AI_ENDPOINTS_DOMAIN
+The domain of AI Endpoints; by default
+.Ql endpoints.kepler.ai.cloud.ovh.net .
+.It Ev OVH_AI_TOKEN
+The API token.
+.It Ev OVH_AI_TOKEN_FILE
+A file whose first line is the token; by default
+.Pa ~/.config/ovhcloud/ai-token .
+.It Ev OVH_AI_TTS_ENDPOINT
+The Riva endpoint, instead of the one the model's host makes.
+.It Ev PIPER_VOICE_PATH
+The directories piper voices are looked for in, colon-separated, in
+order of preference; by default
+.Pa ~/.local/share/piper/voices ,
+.Pa /usr/local/share/piper-voices
+and
+.Pa /usr/share/piper-voices .
+.It Ev PIPER_VOICE_URL
+The piper voice collection; by default
+.Lk https://huggingface.co/rhasspy/piper-voices/resolve/main .
+.It Ev TMPDIR
+Where the temporary directory is made, instead of
+.Pa /tmp .
+.It Ev VOCALISE_AUDIO
+The default of
+.Fl A .
+.It Ev VOCALISE_ENGINE
+The default of
+.Fl E ;
+set to
+.Cm local
+in a shell profile, it keeps every text on the machine unless
+.Fl E
+says otherwise.
+.It Ev VOCALISE_OSS_DEVICE
+The OSS device; by default
+.Pa /dev/dsp .
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.local/share/piper/voices/
+The first directory of the default voice path, where
+.Fl d
+installs voices for its user.
+.It Pa ~/.config/ovhcloud/ai-token
+The token, on its first line.
+.It Pa ~/.authinfo , Pa ~/.netrc
+The token, as the password of the AI Endpoints host.
+.It Pa ~/.config/aichat/config.yaml
+The token, as the
+.Ql api_key
+of the client named
+.Ql OVH .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The text was spoken, written, listed or downloaded.
+.It 1
+A failure: no engine can speak the language, an unknown voice, no
+token, no encoder for the format, no working audio output, or an error
+from the API, whose answer is shown on stderr.
+.It 2
+A usage error: an unknown engine or output, a speed, rate or
+.Fl b
+out of range or unreadable, or no text and stdin a terminal.
+.It 130
+Interrupted.
+.El
+.Sh EXAMPLES
+Say something, through the speakers:
+.Bd -literal -offset indent
+$ vocalise "The build is done."
+.Ed
+.Pp
+A chapter in French, offline, as Opus, a little slower:
+.Bd -literal -offset indent
+$ vocalise -E local -l fr -s 0.9 -o chapitre.opus < chapitre.txt
+.Ed
+.Pp
+The French piper voices there are, then one of them installed:
+.Bd -literal -offset indent
+$ vocalise -D -l fr
+$ vocalise -d -E piper -l fr siwis-medium
+.Ed
+.Pp
+A calm English Riva voice, to a 64 kbit/s MP3:
+.Bd -literal -offset indent
+$ vocalise -E riva -v Female-Calm -b 64k -o notice.mp3 "Doors closing."
+.Ed
+.Sh SEE ALSO
+.Xr curl 1 ,
+.Xr espeak-ng 1 ,
+.Xr ffmpeg 1 ,
+.Xr piper 1 ,
+.Xr transcribe 1
+.Sh CAVEATS
+The Linux audio outputs, pulse and alsa, are new and have not been
+tried on real hardware.
+.Pp
+Riva's
+.Fl s
+wraps the text in SSML, so markup of one's own in the text is escaped
+rather than read as SSML.

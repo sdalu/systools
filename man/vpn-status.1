@@ -1,0 +1,169 @@
+.Dd October 18, 2026
+.Dt VPN-STATUS 1
+.Os
+.Sh NAME
+.Nm vpn-status
+.Nd list the VPN tunnels that are up, one word each
+.Sh SYNOPSIS
+.Nm
+.Op Fl p
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+prints, on one line, a label for each VPN tunnel that is up, separated
+by spaces; the line is empty when none is.
+A tunnel is a WireGuard, tun or tap interface that is both up and
+running.
+On
+.Fx
+the candidates are the interfaces of the
+.Ql wg ,
+.Ql tun ,
+.Ql tap
+and
+.Ql vpn
+interface groups, as
+.Xr ifconfig 8
+reports them; on Linux, every interface sysfs says is a WireGuard one,
+or that has
+.Pa tun_flags .
+.Pp
+A tunnel's label is the first that exists of:
+.Bl -enum -offset indent
+.It
+the first word of its description: the
+.Va ifconfig_ Ns Ar IF Ns Va _descr
+of
+.Xr rc.conf 5
+on
+.Fx ,
+the interface alias on Linux
+.Pq Ic ip link set Ar IF Ic alias Ar ... ;
+.It
+for a tun or tap interface,
+.Xr openconnect 8 Ns 's
+.Fl -authgroup
+on the command line of the process holding it,
+else that process's first argument that is not an option (the server),
+else its name;
+.It
+for a WireGuard interface, the endpoint address of the first peer that
+has one, without its port;
+.It
+the interface name.
+.El
+.Pp
+A tunnel outside the default FIB on
+.Fx ,
+or enslaved to a VRF on Linux, has
+.Ql / Ns Ar FIB
+or
+.Ql / Ns Ar VRF
+appended:
+.Ql mullvad/1 .
+.Pp
+A WireGuard tunnel with a
+.Ql PersistentKeepalive
+peer is dead when no peer has handshaken in the last three minutes plus
+that keepalive interval: configured, but nothing answers.
+Its label gets a trailing
+.Ql \&!
+.Pq Ql mullvad/1\&! .
+A peer carrying traffic re-handshakes every two minutes, and keepalive
+sends traffic at least once per interval.
+A tunnel with no keepalive peer is not marked: when idle, its peers stop
+handshaking, and that silence cannot be told from a peer that is gone.
+Nor is a tunnel
+.Xr wg 8
+cannot be asked about, as on Linux for any user but root.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl h
+Print the usage and exit.
+.It Fl p
+Format for polybar: a dead tunnel is shown in red rather than with a
+.Ql \&! ,
+and no tunnel at all as a red
+.Ql none .
+The red is
+.Ev VPN_STATUS_RED ,
+else the
+.Va red
+that polybar's colour script
+.Ev VPN_STATUS_COLORS
+defines, else
+.Ql #dc322f .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width VPN_STATUS_COLORS
+.It Ev PROCFS
+The root of procfs on Linux, instead of
+.Pa /proc ,
+where the owner of a tun or tap interface is looked for.
+.It Ev SYSFS
+The root of sysfs on Linux, instead of
+.Pa /sys .
+.It Ev VPN_STATUS_COLORS
+The shell script, sourced, that sets
+.Va red
+for
+.Fl p ,
+instead of
+.Pa ~/.config/polybar/scripts/colors.sh .
+.It Ev VPN_STATUS_RED
+The colour of
+.Fl p ,
+outright.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The list was printed, empty or not.
+.It 1
+The platform is neither
+.Fx
+nor Linux.
+.It 2
+A usage error.
+.El
+.Sh EXAMPLES
+Two tunnels, one in FIB 1 that no longer answers:
+.Bd -literal -offset indent
+$ vpn-status
+work mullvad/1!
+.Ed
+.Pp
+A polybar module:
+.Bd -literal -offset indent
+[module/vpn]
+type = custom/script
+exec = vpn-status -p
+interval = 10
+.Ed
+.Pp
+Label a
+.Fx
+WireGuard tunnel in
+.Xr rc.conf 5 :
+.Bd -literal -offset indent
+ifconfig_wg0_descr="mullvad (External VPN)"
+.Ed
+.Sh SEE ALSO
+.Xr ifconfig 8 ,
+.Xr ip 8 ,
+.Xr wg 8
+.Sh CAVEATS
+A WireGuard tunnel without
+.Ql PersistentKeepalive
+is never marked dead, even when its peer is gone: idle, it stops
+handshaking, and that silence looks the same.
+Set
+.Ql PersistentKeepalive
+on a peer for the mark to mean something.
+.Pp
+On Linux two things need root:
+.Xr wg 8
+answers only root, so a dead WireGuard tunnel is not marked, and the
+owner of a tun device run by root cannot be seen, so the tunnel is
+labelled by its name.

@@ -1,0 +1,243 @@
+.Dd October 18, 2026
+.Dt OPENWRT-ACL 1
+.Os
+.Sh NAME
+.Nm openwrt-acl
+.Nd manage the MAC accept-list of an OpenWrt SSID over ssh
+.Sh SYNOPSIS
+.Nm
+.Op Fl n
+.Op Fl f | Fl l
+.Op Fl b Ar band
+.Op Fl H Ar host
+.Op Fl s Ar ssid
+.Cm list | clients
+.Nm
+.Op Fl n
+.Op Fl f | Fl l
+.Op Fl b Ar band
+.Op Fl H Ar host
+.Op Fl s Ar ssid
+.Cm add | del
+.Ar device ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+shows and changes the list of devices an OpenWrt router lets onto one
+SSID, the MAC filter of each wireless interface carrying it.
+It runs a small helper on the router through
+.Xr ssh 1 ,
+which reads and writes the list with
+.Xr uci 1
+and asks
+.Xr ubus 1 ,
+.Xr jsonfilter 1
+and
+.Xr iw 8
+there; nothing beyond
+.Xr ssh 1
+is needed here.
+.Pp
+The radios carrying an SSID keep separate accept-lists, and the
+difference between them means something: a device absent from the 5 GHz
+list is confined to 2.4 GHz.
+.Cm add
+and
+.Cm del
+therefore act on every band, unless
+.Fl b
+names one.
+.Pp
+A device is named by its MAC address, as
+.Ql aa:bb:cc:dd:ee:ff ,
+.Ql AA-BB-CC-DD-EE-FF
+or
+.Ql aabbccddeeff ,
+or by a name from
+.Pa /etc/ethers
+on the router, which is also where
+.Cm list
+and
+.Cm clients
+take the names they show.
+A MAC matches an entry however it is stored: upper or lower case, with
+colons, dashes, dots or none.
+.Pp
+The commands are:
+.Bl -tag -width "clients"
+.It Cm list
+A table of every MAC on the accept-lists, with its name and a column
+per radio, marked
+.Ql confined
+when some radio lacks it.
+.It Cm clients
+The stations associated with each radio, with their names.
+.It Cm add Ar device ...
+Add the devices to the accept-list of every radio carrying the SSID,
+where they are not on it already.
+.It Cm del Ar device ...
+Remove the devices from every radio carrying the SSID.
+.El
+.Pp
+A change is committed to
+.Xr uci 1
+first, which is the source of truth, and then applied.
+Applying it costs a reassociation: hostapd reads its accept-list only
+when its configuration is loaded, so the BSSes carrying the SSID are
+reloaded, two seconds after the command returns, and their clients
+reconnect within a few seconds.
+The radio's other SSIDs are left alone unless
+.Fl f
+is given; where a BSS cannot be reloaded alone, because hostapd keeps
+no accept-list file for it, the change waits for the next reload
+instead.
+.Sh OPTIONS
+.Bl -tag -width "-H host"
+.It Fl b Ar band
+Act on the radios of one band only:
+.Ql 2.4 ,
+.Ql 5
+or
+.Ql 6
+.Po also
+.Ql 2.4GHz
+or
+.Ql 2g ,
+and so on
+.Pc ,
+or
+.Ql all ,
+the default.
+.It Fl f
+Apply a change with a full
+.Ql wifi reload ,
+which drops every client of every SSID, rather than reloading only the
+BSSes carrying this one.
+.It Fl H Ar host
+The router, as an
+.Xr ssh 1
+destination; the default is
+.Ev OPENWRT_ACL_HOST .
+.It Fl h
+Print the usage and exit.
+.It Fl l
+Commit a change to
+.Xr uci 1
+without applying it: it takes effect at the next reload, disturbing
+nobody now.
+.It Fl n
+A dry run: show the plan of changes, one
+.Ql + section mac
+or
+.Ql - section mac
+line each, and change nothing.
+.It Fl s Ar ssid
+The SSID to act on, matched whole; the default is
+.Ev OPENWRT_ACL_SSID .
+.El
+.Pp
+.Fl f
+and
+.Fl l
+exclude one another.
+.Sh ENVIRONMENT
+.Bl -tag -width OPENWRT_ACL_HOST
+.It Ev OPENWRT_ACL_HOST
+The router, when
+.Fl H
+is not given; the default is
+.Ql maxwell .
+.It Ev OPENWRT_ACL_SSID
+The SSID, when
+.Fl s
+is not given; the default is
+.Ql rezo_zero .
+.El
+.Sh FILES
+On the router:
+.Bl -tag -width Ds
+.It Pa /etc/ethers
+The names of devices, one
+.Ql mac name
+line each; dnsmasq reads it too.
+.It Pa /var/run/hostapd- Ns Ar ifname Ns Pa .maclist
+hostapd's accept-list for one interface, rewritten before its BSS is
+reloaded.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Success; and, for
+.Cm list
+and
+.Cm clients ,
+also a failure on the router
+.Pq Sx CAVEATS .
+.It 1
+A failure on the router: no wireless interface carries the SSID, a
+name is not in its
+.Pa /etc/ethers ,
+or a change could not be made.
+.It 255
+.Xr ssh 1
+could not reach the router, for
+.Cm add
+and
+.Cm del .
+.It 2
+A command line that cannot be right: an unknown command, a device
+that is neither a MAC address nor a name,
+.Fl f
+with
+.Fl l .
+.El
+.Sh EXAMPLES
+Which devices may join, and on which bands:
+.Bd -literal -offset indent
+$ openwrt-acl list
+.Ed
+.Pp
+Let a phone onto the 2.4 GHz radio only, after seeing the plan:
+.Bd -literal -offset indent
+$ openwrt-acl -n -b 2.4 add aa:bb:cc:dd:ee:01
+$ openwrt-acl -b 2.4 add aa:bb:cc:dd:ee:01
+.Ed
+.Pp
+Remove a device named in
+.Pa /etc/ethers ,
+for the next reload:
+.Bd -literal -offset indent
+$ openwrt-acl -l del laptop
+.Ed
+.Sh SEE ALSO
+.Xr ssh 1 ,
+.Xr ethers 5 ,
+.Xr iw 8
+.Sh CAVEATS
+The defaults, the router
+.Ql maxwell
+and the SSID
+.Ql rezo_zero ,
+are the author's; set
+.Ev OPENWRT_ACL_HOST
+and
+.Ev OPENWRT_ACL_SSID ,
+or use
+.Fl H
+and
+.Fl s .
+.Pp
+The update is not live: installing hostapd-utils on the router would
+allow one,
+.Ql hostapd_cli accept_acl add_mac ,
+which
+.Nm
+does not use.
+.Pp
+The status of
+.Cm list
+and
+.Cm clients
+is that of the table they print: a failure on the router is reported
+on stderr, but the exit status is 0.

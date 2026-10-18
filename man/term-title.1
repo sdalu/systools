@@ -1,0 +1,197 @@
+.Dd October 18, 2026
+.Dt TERM-TITLE 1
+.Os
+.Sh NAME
+.Nm term-title
+.Nd set the terminal's title, or run a command under its own
+.Sh SYNOPSIS
+.Nm
+.Op Fl q
+.Op Fl o Ar file
+.Op Fl T Ar type
+.Op Fl b | Fl i | Fl w
+.Op Ar text ...
+.Nm
+.Op Fl q
+.Op Fl o Ar file
+.Op Fl T Ar type
+.Op Fl b | Fl i | Fl w
+.Fl e Ar command Op Ar arg ...
+.Nm
+.Op Fl q
+.Op Fl o Ar file
+.Op Fl T Ar type
+.Op Fl b | Fl i | Fl w
+.Fl r | Fl s
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+sets the window title of a terminal, its icon name, or both.
+The text is the arguments joined by spaces; none clears it.
+Control characters are removed from it, so a title taken from a file or
+a host name cannot slip an escape sequence to the terminal.
+.Pp
+With
+.Fl e ,
+the title is the command line: the previous title is saved on the
+terminal's title stack, the command is run under the new one, and the
+previous one is restored when the command ends, on Ctrl-C too.
+The title is restored from the terminal's own stack rather than from a
+title read back, because reading a title back is a query most terminals
+refuse to answer.
+.Pp
+The sequences sent follow
+.Ev TERM ,
+or
+.Fl T :
+.Bl -tag -width "screen"
+.It Cm xterm
+xterm, and every terminal speaking its OSC 0, 1 and 2 sequences
+.Pq rxvt, alacritty, foot, kitty, st, wezterm, ghostty, those based on VTE or Konsole... :
+the window title, the icon name, which several show as the tab title,
+or both; and the title stack, for
+.Fl s ,
+.Fl r
+and
+.Fl e .
+.It Cm screen
+.Xr screen 1
+and
+.Xr tmux 1 :
+the window name, whatever
+.Fl w ,
+.Fl i
+or
+.Fl b
+say.
+They keep no title stack, so
+.Fl s
+and
+.Fl r
+are refused, and
+.Fl e
+leaves the command's name in place when it ends.
+.El
+.Pp
+A terminal whose
+.Ev TERM
+is in neither family is refused, unless
+.Fl T
+names the sequences to send; with
+.Fl e ,
+the command is run all the same, untitled.
+.Pp
+The sequences go to the terminal,
+.Pa /dev/tty ,
+not to stdout, so a command whose output is redirected
+.Pq Ql term-title -e make > build.log
+never puts escape codes into the file.
+Where there is no terminal, they go to stdout, and
+.Fl o
+names a file outright.
+.Sh OPTIONS
+.Bl -tag -width "-o file"
+.It Fl b
+Set both the window title and the icon name; the default.
+.It Fl e Ar command Op Ar arg ...
+Run
+.Ar command
+with its command line as the title, then restore the title it had.
+.It Fl h
+Print the usage and exit.
+.It Fl i
+Set the icon name, the tab title in several terminals.
+.It Fl o Ar file
+Append the sequences to
+.Ar file
+instead of writing them to the terminal.
+.It Fl q
+Quiet: say nothing about a terminal that cannot be titled.
+.It Fl r
+Restore the title last saved on the terminal's stack.
+.It Fl s
+Save the title on the terminal's stack.
+.It Fl T Ar type
+Send
+.Cm xterm
+or
+.Cm screen
+sequences, whatever
+.Ev TERM
+says.
+.It Fl w
+Set the window title.
+.El
+.Pp
+.Fl b , i
+and
+.Fl w
+exclude one another, and so do
+.Fl e , r
+and
+.Fl s ;
+with
+.Fl r
+or
+.Fl s ,
+the one chosen says which title the stack saves or restores.
+.Sh ENVIRONMENT
+.Bl -tag -width TERM
+.It Ev TERM
+The terminal's type, which decides the sequences sent, unless
+.Fl T .
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+The title was set, saved or restored.
+.It 1
+A terminal that cannot be titled, or
+.Fl s
+or
+.Fl r
+under
+.Xr screen 1
+or
+.Xr tmux 1 .
+.It 2
+A usage error.
+.El
+.Pp
+With
+.Fl e ,
+the exit status is the command's: 130, 143 or 129 when
+.Nm
+is interrupted, terminated or hung up while it runs.
+.Sh EXAMPLES
+Name the window after the host:
+.Bd -literal -offset indent
+$ term-title "$(uname -n)"
+.Ed
+.Pp
+A long build under its own title, the old one back afterwards:
+.Bd -literal -offset indent
+$ term-title -e make -j8
+.Ed
+.Pp
+Only the tab title:
+.Bd -literal -offset indent
+$ term-title -i logs
+.Ed
+.Sh SEE ALSO
+.Xr screen 1 ,
+.Xr tmux 1 ,
+.Xr xterm 1
+.Sh CAVEATS
+.Nm
+knows terminals by
+.Ev TERM ;
+one outside its list is refused unless
+.Fl T
+names the sequences to send.
+Restoring a title needs the terminal's title stack, which
+.Xr screen 1
+and
+.Xr tmux 1
+lack.

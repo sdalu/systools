@@ -283,3 +283,19 @@ a test names, so both branches of a tool are tested on either system.
 the tool behind the missing one is the real `zfs`, which destroys
 snapshots. Every refusal a tool makes is tested with the check that
 nothing was touched beside it.
+
+
+## Man pages: written, and held to the scripts
+
+Each tool has an mdoc page in `man/`, the way `mail-imap` keeps its
+own: mdoc because it is FreeBSD's native format and `mandoc -Tlint`
+can check it, where `man(7)` leaves layout to the writer. The pages
+are written rather than generated from the header comments, because a
+reference wants examples, an exit-status list and caveats that a
+header comment would carry badly; the header stays as a summary. A
+page written by hand drifts, so `tests/check-man.sh` holds every page
+to its script: the option letters of its SYNOPSIS and of its OPTIONS
+list must be exactly those its `getopts` takes. What an option does is
+not checked, only that it is there. The lint drops one mandoc message,
+a referenced page that is not installed: whether `curl(1)` is
+installed is a fact about the host, not about the page.
