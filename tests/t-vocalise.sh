@@ -135,6 +135,10 @@ say -f flac -b 5 -o "$tmp/out.flac" 'Hi.'
 check_in "$(cat "$FFMPEG_LOG")" "-compression_level 5" "-f flac -b 5: the compression level"
 say -o "$tmp/OUT.WAV" 'Hi.'
 check_eq "$(cat "$FFMPEG_LOG")" "" "-o .WAV: a copy, no encoder"
+say -o "$tmp/out." 'Hi.'
+check_rc 0 "-o out.: succeeds"
+check_eq "$(cat "$FFMPEG_LOG")" "" "-o out.: a dot with nothing after it is no extension, so wav"
+check_eq "$(head -c 4 "$tmp/out.")" RIFF "-o out.: a WAV written"
 
 run vocalise -h
 check_in "$out" "auto tries, in order, sndio oss" "FreeBSD: sndio, then oss"

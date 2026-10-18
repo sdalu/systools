@@ -363,9 +363,9 @@ stage_credentials() {
          > "$tmpdir/curlrc") || die "could not stage the credentials"
 }
 
-# The characters in stdin, whatever the locale: UTF-8 continuation bytes
-# (0x80-0xbf) are left out of the count, where wc -m under C would count
-# every byte.
+# The characters in UTF-8 text on stdin, whatever the locale: continuation
+# bytes (0x80-0xbf) are left out of the count, where wc -m under C would
+# count every byte.  Text in a single-byte encoding is counted short.
 char_count() {
     local n
     n=$(LC_ALL=C tr -d '\200-\277' | wc -c)
@@ -382,11 +382,12 @@ safe_path() {
 
 # The extension is a property of the basename: a dot in a directory
 # name ("dir.v2/out") is not one, and neither is the leading dot of a
-# dotfile.
+# dotfile, nor a dot with nothing after it ("out.").
 extension() {
     local base
     base=${1##*/}
     case $base in
+        *.)           printf '%s\n' wav            ;;
         .*.*|[!.]*.*) printf '%s\n' "${base##*.}" ;;
         *)            printf '%s\n' wav            ;;
     esac
