@@ -157,11 +157,12 @@ publishes as `sys.class.drm.card<N>-<connector>.status` sysctls, under
 the names Linux uses. `drm_info` reads the same driver, so it adds a
 dependency and nothing else -- and its outputs are a box-drawn tree, or
 JSON that wants `jq`. `xrandr` remains for an X server whose driver is
-not drm-kmod. Linux keeps all three in sysfs and needs no tool at all; a USB power supply counts there, because a USB-C dock
-powers the laptop over USB rather than through a Mains adapter.
-`acpi_dock(4)` was not used: it covers only ACPI docking stations
-(`_DCK`), not USB-C docks. Internal panels -- eDP, LVDS and DSI -- never
-count as the external screen.
+not drm-kmod. Linux keeps all three in sysfs and needs no tool at all; a
+USB power supply counts there, because a USB-C dock powers the laptop
+over USB rather than through a Mains adapter. `acpi_dock(4)` was not
+used: it covers only ACPI docking stations (`_DCK`), not USB-C docks.
+Internal panels -- eDP, LVDS and DSI -- never count as the external
+screen.
 
 
 ## default-gateway: the route in use
