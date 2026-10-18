@@ -1,14 +1,17 @@
 # systools
 
 Small system tools, written in POSIX sh, that behave the same on FreeBSD
-and on Linux. They run from `bin/` as they are, from a symlink, or
-installed under a prefix; there is nothing to build.
+and on Linux -- all but two, `caldav` and `carddav`, which are Ruby. They
+run from `bin/` as they are, from a symlink, or installed under a prefix;
+there is nothing to build.
 
 
 ## The tools
 
 | Tool | What it does | Needs |
 |---|---|---|
+| `caldav` | list, show, add, change, edit, import, delete and back up the events and tasks of a CalDAV calendar, and set its name, colour and description | Ruby 3.4 or later, with the `nokogiri` gem |
+| `carddav` | list, show, add, change, edit, import, delete and back up the contacts of a CardDAV address book | Ruby 3.4 or later, with the `nokogiri` gem |
 | `compositor-picom` | run picom at an effect level -- tear, light or full -- remembered for the next login, refusing a software-rendered X server | `picom`; `glxinfo` to check the renderer |
 | `default-gateway` | print the gateway of the default route, IPv4 or IPv6, in a given FIB or table; a route with no gateway prints its interface | `route` (FreeBSD), `ip` (Linux) |
 | `do-screenshot` | screenshot the X11 desktop, a mouse-picked area or the active window (now or after a countdown) to a dated PNG, copied to the clipboard and announced; without a mode, a rofi menu asks | `maim`; `xdotool` for a window; `xclip`, `notify-send` and `rofi` when present |
@@ -83,8 +86,10 @@ tests` runs every tool against stand-ins in `tests/fake/` for `zfs`,
 `ffprobe`, `espeak-ng`, `piper`, `picom`, `pgrep`, `pkill`, `glxinfo`,
 `maim`, `xdotool`, `xclip`, `notify-send`, `rofi`, `vorbiscomment`,
 `iw`, `wpa_cli`, OpenWrt's `uci`, `ubus`, `jsonfilter` and `wifi`,
-`uname` and the priority tools, an editor (`edit-tags`), and a sysfs
-tree for Linux, so it touches no pool, no network and no router, and it
+`uname` and the priority tools, an editor (`edit-tags`), a sysfs tree
+for Linux, and a CalDAV and CardDAV server on 127.0.0.1 for `caldav` and
+`carddav` (`tests/dav-server.rb`), so it touches no pool, no network, no
+router and no calendar, and it
 takes the FreeBSD and the Linux branch of each tool on either system.
 Each `tests/t-*.sh` names what it checks in its header and prints one
 line per check.
@@ -92,6 +97,12 @@ line per check.
 
 ## Known shortfalls
 
+- `caldav` and `carddav` without `-U` need the user given (`-u`,
+  `CALDAV_USER` and `CARDDAV_USER`, or `EMAIL`): the server is found
+  from the user's domain, and only then its `~/.authinfo` entry. The suite runs
+  them against its own small server (`tests/dav-server.rb`), not
+  against Cyrus, and skips them on a host without Ruby 3.4 and
+  `nokogiri` -- the Debian userland here among them.
 - `zfs-snapshot` expires only what fell due since the day before. A day
   the job did not run leaves that day's expiries undone;
   `zfs-snapshot -t YYYY-MM-DD dataset` replays it.

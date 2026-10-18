@@ -1,0 +1,448 @@
+.Dd October 18, 2026
+.Dt CALDAV 1
+.Os
+.Sh NAME
+.Nm caldav
+.Nd list, show, add and change events and tasks on a CalDAV server
+.Sh SYNOPSIS
+.Nm
+.Op Fl AjnT
+.Op Fl B Ns Op Ar dir
+.Op Fl c Ar calendar
+.Op Fl p Ar password
+.Op Fl U Ar url
+.Op Fl u Ar user
+.Op Fl -debug
+.Ar command
+.Op Ar argument ...
+.Nm
+.Op Fl a Ar line
+.Op Fl D Ar text
+.Op Fl d Ar prop
+.Op Fl f Ar when
+.Op Fl l Ar text
+.Op Fl N Ar count
+.Op Fl S Ar text
+.Op Fl s Ar line
+.Op Fl t Ar when
+.Op Fl -alarm Ar length
+.Op Fl -color Ar rrggbb
+.Op Fl -due Ar when
+.Op Fl -duration Ar length
+.Op Fl -end Ar when
+.Op Fl -name Ar text
+.Op Fl -start Ar when
+.Ar command
+.Op Ar argument ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+reads and changes one calendar on a CalDAV server: its events and
+tasks, and its name, colour and description.
+Options and the command may come in any order.
+The commands are:
+.Bl -tag -width Ds
+.It Cm calendars
+The calendars of the calendar home, one line each: id, name, and the
+components it holds
+.Pq Ql VEVENT,VTODO .
+.It Cm list Op Ar regex
+The events from
+.Fl f
+to
+.Fl t ,
+today and the 30 days after by default, recurrences expanded by the
+server into their instances, in order, one line each: when, summary
+and UID; with
+.Fl T ,
+the tasks instead, all of them unless
+.Fl f
+or
+.Fl t
+is given, with their due date and status.
+A
+.Ar regex
+keeps those whose summary, location, description or categories it
+matches, without regard to case.
+.It Cm show Ar event
+The event's iCalendar object, as the server holds it.
+.It Cm add
+A new event made from the options: it needs a summary
+.Pq Fl S
+and a start
+.Pq Fl -start ;
+without an end or a duration it lasts an hour, or a day for an
+all-day start.
+With
+.Fl T ,
+a task, which needs only its summary.
+.It Cm set Ar event
+The event changed by the options.
+.It Cm edit Ar event
+The event opened in
+.Ev EDITOR ,
+and stored when the file was changed.
+A file that does not parse is offered back to the editor, when there is
+a terminal to ask on.
+.It Cm import Ar file ...
+The events of iCalendar files, or of stdin for
+.Ql - ,
+stored one object per UID with the time zones they name: an event whose
+UID the calendar has replaces it, any other is created.
+When several files hold the same UID, the last one wins, so a
+.Fl B
+directory restores to its newest copies.
+An object the server refuses is reported and the others still go.
+.It Cm delete Ar event
+The event deleted, the whole series of a recurring one.
+.It Cm backup Op Ar file
+Every object of the calendar saved as one iCalendar file, each time
+zone once: to
+.Ar file ,
+to stdout for
+.Ql - ,
+or by default to a new
+.Pa CALENDAR-TIMESTAMP.ics
+in the current directory, named after
+.Fl c .
+.Cm import
+restores it.
+.It Cm props
+The calendar's name, colour and description; with
+.Fl -name ,
+.Fl -color
+or
+.Fl D ,
+those are changed first, an empty value removing one.
+.El
+.Pp
+An
+.Ar event
+is a UID, the name of its resource without
+.Pa .ics ,
+or a regular expression matching the summary of exactly one event, of
+those between
+.Fl f
+and
+.Fl t
+when either is given; a regex matching several lists them and fails.
+.Pp
+A
+.Ar when
+is a date
+.Pq Ql 2026-10-15 ,
+a whole day; a date and a time
+.Pq Ql "2026-10-15 14:00" ;
+a time alone, today or on the day of the start
+.Pq Ql 14:00 ;
+or a day counted from today, with or without a time:
+.Ql today ,
+.Ql "tomorrow 9:30" ,
+.Ql "+3 10:00" .
+A date as the end is the last day, inclusive.
+A
+.Ar length
+is a number of minutes
+.Pq Ql 90 ,
+or weeks, days, hours and minutes
+.Pq Ql 1h30m , Ql 2d , Ql 1w .
+Times are written in the local time zone, named by reference
+.Pq Ql DTSTART;TZID=Europe/Paris ,
+the zone of
+.Ev TZ
+or of
+.Pa /etc/localtime ;
+whole days as dates.
+.Pp
+Every change is conditional, so a newer version is never overwritten:
+an event is created only where none is
+.Pq Ql If-None-Match: * ,
+and replaced or deleted only in the version read
+.Pq Ql If-Match .
+When it changed on the server meanwhile, the change fails;
+.Cm edit
+then keeps the edited copy and names it.
+A change stamps the event's
+.Ql DTSTAMP
+and
+.Ql LAST-MODIFIED ,
+and a new time also raises its
+.Ql SEQUENCE ,
+so that attendees' copies follow.
+.Ss The server and the calendar
+With
+.Fl U ,
+the URL is the calendar, and its parent the calendar home.
+Without it, the home is found from the domain of the user: the
+.Ql _caldavs._tcp
+SRV record of the domain names the server, its TXT record
+.Ql path=
+the path, and the home is
+.Pa https://server:port/path/user/USER/ ;
+.Fl c
+then picks a calendar in it, by id or by name.
+.Ss Credentials
+The user is
+.Fl u ,
+else
+.Ev CALDAV_USER ,
+else, with
+.Fl U ,
+the login of the entry for the URL's host in
+.Pa ~/.authinfo ,
+then
+.Pa ~/.netrc ;
+else
+.Ev EMAIL .
+Without
+.Fl U
+the user must be one of the options or variables, since the server is
+found from it.
+The password is
+.Fl p ,
+else
+.Ev CALDAV_PASSWORD ,
+else the password of the server's entry, that of the URL's host or of
+the server found, when its login is the user's, else asked on the
+terminal.
+In those files, lines starting with
+.Ql #
+are skipped, and a trailing backslash joins a line to the next.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl A , Fl -all
+.Cm list :
+every calendar holding the component listed, each line starting with
+the calendar's name.
+.It Fl a Ar line , Fl -add Ns = Ns Ar line
+Add an iCalendar content line, such as
+.Ql CATEGORIES:Work ,
+to the event; repeatable.
+.It Fl -alarm Ns = Ns Ar length
+Replace the event's reminders by one, this long before it;
+.Ql none
+removes them all.
+.It Fl B Ns Op Ar dir , Fl -backup Ns Op = Ns Ar dir
+Save the server's version of each event before changing or deleting
+it, as
+.Pa UID-TIMESTAMP.ics
+in
+.Ar dir ,
+by default
+.Pa ~/.local/share/caldav .
+The directory is attached:
+.Fl B Ns Pa dir .
+.It Fl c Ar calendar , Fl -calendar Ns = Ns Ar calendar
+The calendar, by id or name;
+.Ql Default
+by default.
+.It Fl -color Ns = Ns Ar rrggbb
+.Cm props :
+set the colour, in hex, with or without its
+.Ql # ,
+and with an alpha byte if wanted.
+.It Fl D Ar text , Fl -description Ns = Ns Ar text
+Set the description, of the event or, for
+.Cm props ,
+of the calendar.
+.It Fl d Ar prop , Fl -delete Ns = Ns Ar prop
+Remove the content lines named
+.Ar prop ,
+in the form
+.Ar name Ns Op ; Ns Ar param Ns Op : Ns Ar value :
+.Ql CATEGORIES
+removes them all,
+.Ql ATTENDEE:mailto:jo@example.org
+that one; repeatable.
+One matching nothing is warned about.
+.It Fl -debug
+Print the HTTP exchange on stderr.
+.It Fl -due Ns = Ns Ar when
+Set a task's due time.
+.It Fl -duration Ns = Ns Ar length
+Set the end, this long after the start.
+.It Fl -end Ns = Ns Ar when
+Set the end, which must be of the start's kind, a date or a time, and
+after it.
+.It Fl f Ar when , Fl -from Ns = Ns Ar when
+The start of the window
+.Cm list
+shows, and of the events an
+.Ar event
+is looked for among.
+.It Fl h , Fl -help
+Print the usage and exit.
+.It Fl j , Fl -json
+Print JSON: one document for
+.Cm calendars ,
+.Cm list ,
+.Cm show
+and
+.Cm props ,
+one object a line for each change.
+.It Fl l Ar text , Fl -location Ns = Ns Ar text
+Set the location.
+.It Fl N Ar count , Fl -limit Ns = Ns Ar count
+.Cm list :
+the first
+.Ar count
+lines only.
+.It Fl n , Fl -dry-run
+Change nothing: print the object that would be stored
+.Pq with Fl j , a JSON object holding it ,
+the deletion that would be made, or the request
+.Cm props
+would send.
+.It Fl -name Ns = Ns Ar text
+.Cm props :
+set the calendar's name.
+.It Fl p Ar password , Fl -password Ns = Ns Ar password
+The password
+.Pq Sx Credentials .
+.It Fl S Ar text , Fl -summary Ns = Ns Ar text
+Set the summary, the event's title.
+.It Fl s Ar line , Fl -set Ns = Ns Ar line
+Replace every content line of that name by this one; repeatable.
+.Fl d ,
+then
+.Fl s ,
+then
+.Fl a
+are applied, to the event itself and not to its modified occurrences.
+.It Fl -start Ns = Ns Ar when
+Set the start.
+An event moved by its start alone keeps its length.
+A recurring event with modified occurrences is not moved, since they
+would be orphaned;
+.Cm edit
+moves it.
+.It Fl T , Fl -todo
+.Cm list
+and
+.Cm add :
+tasks
+.Pq Ql VTODO ,
+not events.
+.It Fl t Ar when , Fl -to Ns = Ns Ar when
+The end of the window, 30 days after its start by default.
+.It Fl U Ar url , Fl -url Ns = Ns Ar url
+The calendar, by its URL
+.Pq Sx The server and the calendar .
+.It Fl u Ar user , Fl -user Ns = Ns Ar user
+The user
+.Pq Sx Credentials .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width CALDAV_PASSWORD
+.It Ev CALDAV_PASSWORD
+The password, when
+.Fl p
+is not given.
+.It Ev CALDAV_USER
+The user, when
+.Fl u
+is not given.
+.It Ev EDITOR
+The editor of
+.Cm edit ;
+.Xr vi 1
+by default.
+.It Ev EMAIL
+The user, when nothing else names one
+.Pq Sx Credentials ;
+the address that git and mail tools read too.
+.It Ev TZ
+The local time zone, in which times are read and written.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.authinfo , Pa ~/.netrc
+The user and password, as the entry of the server
+.Pq Ql machine host login user password secret .
+.It Pa ~/.local/share/caldav/
+Where
+.Fl B
+saves events by default.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Success.
+.It 1
+A failure: the server or the network failed or refused, no event or
+several matched, the event changed on the server meanwhile, some
+objects of an
+.Cm import
+were refused, or there is no user or password.
+.It 2
+A usage error: an unknown option or command, a missing argument, a
+.Ar when ,
+.Ar length ,
+regex or URL that does not parse, or an end that is not after the
+start.
+.El
+.Sh EXAMPLES
+This week and the next, in every calendar:
+.Bd -literal -offset indent
+$ caldav -A -t +14 list
+.Ed
+.Pp
+A dentist's appointment, with a reminder the day before:
+.Bd -literal -offset indent
+$ caldav add -S Dentist --start 'tomorrow 9:30' --duration 45 \e
+    -l 'Rue du Port' --alarm 1d
+.Ed
+.Pp
+Move it an hour later, keeping the old version:
+.Bd -literal -offset indent
+$ caldav -B set Dentist --start 'tomorrow 10:30'
+.Ed
+.Pp
+A task, then the tasks still open, as JSON:
+.Bd -literal -offset indent
+$ caldav -T add -S 'Renew the passport' --due 2026-11-30
+$ caldav -T -j list
+.Ed
+.Pp
+Save the work calendar, then restore it:
+.Bd -literal -offset indent
+$ caldav -c Work backup work.ics
+$ caldav -c Work import work.ics
+.Ed
+.Sh SEE ALSO
+.Xr carddav 1
+.Sh STANDARDS
+.Bl -tag -width "RFC 6764" -compact
+.It RFC 4791
+Calendaring Extensions to WebDAV (CalDAV).
+.It RFC 5545
+Internet Calendaring and Scheduling Core Object Specification
+(iCalendar).
+.It RFC 6764
+Locating Services for Calendaring Extensions to WebDAV (CalDAV) and
+vCard Extensions to WebDAV (CardDAV); the SRV and TXT records.
+.El
+.Sh CAVEATS
+Storing an event one organises, with attendees, makes a server that
+schedules implicitly, as Cyrus does, mail them the invitation or the
+update:
+.Cm add ,
+.Cm set ,
+.Cm edit
+and
+.Cm import
+all do so.
+.Pp
+.Fl p
+puts the password on the command line, where
+.Xr ps 1
+shows it to every user, and
+.Fl -debug
+prints it, in the Authorization header; the entry in
+.Pa ~/.authinfo
+shows it to nobody.
+.Pp
+.Nm
+is Ruby, unlike the other tools of systools: it needs Ruby 3.4 or later
+and the nokogiri gem.

@@ -12,8 +12,9 @@ Small system tools in POSIX sh, for FreeBSD and Linux.
 - `man/` — one mdoc page per tool, the full reference; `make check`
   lints them and holds each page's options to its tool's `getopts`
 - `tests/` — the suite: `tests/lib.sh` (helpers), `tests/run.sh`, one
-  `t-*.sh` per tool, stand-ins for external tools in `tests/fake/`, and
-  recorded real output in `tests/data/`
+  `t-*.sh` per tool, stand-ins for external tools in `tests/fake/`,
+  recorded real output in `tests/data/`, and `tests/dav-server.rb`, the
+  local DAV server `caldav` and `carddav` are tested against
 
 ## Gate
 
@@ -34,7 +35,9 @@ the man pages) and runs none of the tools; `tests` runs them all against the sta
 - **`run` sets `rc`, `out` and `err`** in the test's own shell. A test
   that keeps a path in `$out` has it replaced by the tool's output, and
   writes files named after that output into the current directory --
-  the repository root, when run from there.
+  the repository root, when run from there. Inside `( ... )` it sets
+  them in the subshell only, and the checks after it read the run
+  before.
 - **Write a test file with the editor, not `cat <<EOF` in the shell.**
   Test files carry here-documents of their own; the outer one ends at
   their first `EOF`, and the rest of the file runs as shell.

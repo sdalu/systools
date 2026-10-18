@@ -20,6 +20,7 @@ INSTALL   ?= install
 SH        ?= sh
 SHELLCHECK?= shellcheck
 MANDOC    ?= mandoc
+RUBY      ?= ruby
 
 .PHONY: help check check-syntax check-lint check-shared check-man tests \
 	install uninstall install-links uninstall-links
@@ -48,20 +49,37 @@ help:						## show this help (the default)
 	    DESTDIR    '$(DESTDIR)  (staging prefix for packaging)' \
 	    SH         '$(SH)  (the shell tests run the scripts under, e.g. dash)' \
 	    SHELLCHECK '$(SHELLCHECK)' \
-	    MANDOC     '$(MANDOC)'
+	    MANDOC     '$(MANDOC)' \
+	    RUBY       '$(RUBY)  (caldav and carddav: 3.4 or later, with nokogiri)'
 	@echo ''
 	@echo 'There is no build target: the scripts run from bin/ as they are.'
 
 check: check-syntax check-lint check-shared check-man	## preflight: every script parses, lints clean, shares one copy, has its page
-check-syntax:					## every script and test parses under SH
-	@for f in bin/* tests/*.sh tests/fake/*; do \
-	    $(SH) -n "$$f" || { echo "make: $$f does not parse" >&2; exit 1; }; \
+# The Ruby tools (caldav, carddav) are told apart by their shebang: they
+# are parsed by $(RUBY) -wc, a warning counting as a failure, and left
+# out of shellcheck.  Without ruby they are skipped, and make says so.
+check-syntax:					## every script and test parses: sh ones under SH, Ruby ones under ruby -w
+	@for f in bin/* tests/*.sh tests/fake/* tests/*.rb; do \
+	    case $$f in *.rb) first=ruby ;; *) first=$$(sed -n 1p "$$f") ;; esac; \
+	    case $$first in \
+	    *ruby*) \
+	        if ! command -v $(RUBY) > /dev/null; then \
+	            echo "make: $(RUBY) not found; $$f not checked" >&2; \
+	            continue; \
+	        fi; \
+	        warnings=$$($(RUBY) -wc "$$f" 2>&1 > /dev/null) && \
+	            [ -z "$$warnings" ] || \
+	            { echo "make: $$f: $$warnings" >&2; exit 1; } ;; \
+	    *) $(SH) -n "$$f" || { echo "make: $$f does not parse" >&2; exit 1; } ;; \
+	    esac; \
 	done
-check-lint:					## shellcheck finds nothing in the scripts or the tests
+check-lint:					## shellcheck finds nothing in the sh scripts or the tests
 	@command -v $(SHELLCHECK) > /dev/null || \
 	    { echo 'make: $(SHELLCHECK) not found (pkg install hs-ShellCheck)' >&2; \
 	      exit 1; }
-	@$(SHELLCHECK) -x bin/* tests/*.sh tests/fake/*
+	@$(SHELLCHECK) -x $$(for f in bin/*; do \
+	    case $$(sed -n 1p "$$f") in *ruby*) ;; *) echo "$$f" ;; esac; \
+	done) tests/*.sh tests/fake/*
 
 check-shared:					## transcribe and vocalise still share the same functions
 	@sh tests/check-shared.sh

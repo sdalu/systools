@@ -16,7 +16,18 @@ work on the tree. A script that ever needs shared code would find it at
 prefix; none does today.
 
 Ruby was the alternative, and the reason it is not used is in the
-history: an interpreter and gems on every host.
+history: an interpreter and gems on every host. `caldav` and `carddav`
+are the exception, by the user's decision: they were Ruby clients of
+2000 lines between them, whose job -- WebDAV's XML, iCalendar and vCard
+folded lines and escapes, DNS SRV discovery, an `$EDITOR` round trip
+with conditional writes -- wants a parser and an HTTP client that sh
+does not have, and which change events and mail invitations, so a
+rewrite would have risked working tools for no gain to the user. They
+came over as they were, given `#!/usr/bin/env ruby` for Linux, the
+exit statuses the other tools use (they had usage errors on 1 and
+failures on 2), and `carddav` the network errors `caldav` already
+caught. They run only where a calendar is used, a desktop, not on
+every host the sh tools serve.
 
 
 ## Portability rules the scripts keep
@@ -273,6 +284,27 @@ the same way, and the table pads a UTF-8 name by its characters, its
 continuation bytes discounted.
 
 
+## caldav and carddav: tested against a server of the suite's own
+
+They talk HTTP through Ruby's own client, not through `curl`, so no
+stand-in on `PATH` can answer them. `tests/dav-server.rb` is a small
+CalDAV and CardDAV server on 127.0.0.1, in Ruby's standard library
+alone, whose collections and resources are directories and files under
+the test's temporary directory: a test sets the calendar up as files,
+runs the tool with `-U` pointing there, and reads the files back, and
+the server logs each request with its credentials and its `If-Match`,
+so a test sees that a change was conditional. It answers what the
+tools send and no more -- no recurrence is expanded, a time-range is
+read as UTC -- which leaves Cyrus's own behaviour, implicit scheduling
+above all, unchecked.
+
+In the gate they are parsed by `ruby -wc`, a warning failing it, and
+left out of shellcheck; RuboCop is not part of it, since the house
+configuration finds some 230 offences in them, nearly all of size and
+of their global options, which a refactor of working code would be the
+only cure for.
+
+
 ## The suite: stand-ins on PATH
 
 `make tests` runs each tool unchanged, with `tests/fake/` first on
@@ -294,8 +326,10 @@ are written rather than generated from the header comments, because a
 reference wants examples, an exit-status list and caveats that a
 header comment would carry badly; the header stays as a summary. A
 page written by hand drifts, so `tests/check-man.sh` holds every page
-to its script: the option letters of its SYNOPSIS and of its OPTIONS
-list must be exactly those its `getopts` takes. What an option does is
-not checked, only that it is there. The lint drops one mandoc message,
-a referenced page that is not installed: whether `curl(1)` is
-installed is a fact about the host, not about the page.
+to its script: the options of its SYNOPSIS and of its OPTIONS list must
+be exactly those the script takes, read from its `getopts` -- or, for
+the Ruby tools, from its OptionParser, long names included. What an
+option does is not checked, only that it is there. The lint drops what
+depends on the pages the host has installed -- a page referred to that
+is not there, an index out of date: whether `curl(1)` is installed is a
+fact about the host, not about the page.

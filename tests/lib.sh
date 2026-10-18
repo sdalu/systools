@@ -37,13 +37,18 @@ done
 passed=0
 failed=0
 
-# run SCRIPT [ARG...] — run bin/SCRIPT under $SH; sets rc, out and err.
+# run SCRIPT [ARG...] — run bin/SCRIPT under $SH, or under ruby when its
+# shebang names it; sets rc, out and err.
 run() {
-    local script="$1"
+    local script="$1" interpreter
     shift
     rc=0
+    interpreter=$SH
+    case $(sed -n 1p "$top/bin/$script") in
+    *ruby*) interpreter=ruby ;;
+    esac
     # shellcheck disable=SC2086  # SH may carry options: SH='bash --posix'
-    $SH "$top/bin/$script" "$@" > "$tmp/out" 2> "$tmp/err" || rc=$?
+    $interpreter "$top/bin/$script" "$@" > "$tmp/out" 2> "$tmp/err" || rc=$?
     out=$(cat "$tmp/out")
     err=$(cat "$tmp/err")
 }
@@ -63,6 +68,37 @@ fail() {
     printf '       exit status %s\n' "${rc-}"
     printf '%s\n' "${out-}" | sed 's/^/       out| /'
     printf '%s\n' "${err-}" | sed 's/^/       err| /'
+}
+
+# ruby_ready — this host has the Ruby (3.4 or later, with nokogiri) that
+# caldav and carddav need; their tests skip themselves without it.
+ruby_ready() {
+    ruby -rnokogiri -e 'exit(RUBY_VERSION >= "3.4" ? 0 : 1)' \
+        > /dev/null 2>&1
+}
+
+# dav_server ROOT — serve ROOT with tests/dav-server.rb on 127.0.0.1;
+# sets dav_port, and dav_log to the file of the requests it answers.
+# The server is stopped when the test exits.
+dav_server() {
+    local n=0
+    dav_log=$tmp/dav.log
+    : > "$dav_log"
+    ruby "$top/tests/dav-server.rb" "$1" "$tmp/dav.port" "$dav_log" \
+        2> "$tmp/dav.err" &
+    dav_pid=$!
+    trap 'kill "$dav_pid" 2> /dev/null; rm -rf -- "$tmp"' EXIT
+    while [ ! -s "$tmp/dav.port" ]; do
+        n=$((n + 1))
+        if [ "$n" -gt 100 ] || ! kill -0 "$dav_pid" 2> /dev/null; then
+            printf 'Bail out: the DAV server did not start\n'
+            cat -- "$tmp/dav.err"
+            exit 1
+        fi
+        sleep 0.1
+    done
+    # shellcheck disable=SC2034  # read by the test that sourced this
+    dav_port=$(cat -- "$tmp/dav.port")
 }
 
 check_rc() {

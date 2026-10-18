@@ -1,0 +1,761 @@
+#!/usr/bin/env ruby
+# frozen_string_literal: true
+
+# carddav -- list, show, insert and modify contacts on a CardDAV server.
+#
+# Credentials: --user/--password, else $CARDDAV_USER/$CARDDAV_PASSWORD, else
+# the ~/.authinfo or ~/.netrc entry for the server host, else (the user)
+# $EMAIL or (the password) a prompt.
+# The address book home is found from the user's domain (_carddavs._tcp
+# SRV + TXT path=); --book picks an address book in it by id or display
+# name, unless --url names the collection outright.
+# Without --url the user must be given (--user, $CARDDAV_USER or $EMAIL):
+# the server is found from it, and only then its ~/.authinfo entry.
+
+require "io/console"
+require "json"
+require "fileutils"
+require "net/http"
+require "openssl"
+require "optparse"
+require "resolv"
+require "securerandom"
+require "shellwords"
+require "tempfile"
+require "time"
+require "uri"
+
+require "nokogiri"
+
+module CardDAV
+    class Error < StandardError; end
+
+    # A non-2xx answer; status lets callers tell a 412 conflict apart.
+    class HTTPError < Error
+        attr_reader :status
+
+        def initialize(msg, status)
+            super(msg)
+            @status = status
+        end
+    end
+
+    # A vCard kept as its unfolded content lines, so that properties the
+    # script does not touch (PHOTO, X-*, groups) round-trip unchanged.
+    class VCard
+        Line = Data.define(:name, :params, :value) do
+            def self.parse(text)
+                head, value = VCard.split_unquoted(text, ":")
+                raise Error, "malformed content line: #{text}" if value.nil?
+
+                name, params = VCard.split_unquoted(head, ";")
+                new(name:, params: params ? ";#{params}" : "",
+                    value:)
+            end
+
+            def base   = name.split(".").last.upcase
+            def to_s   = "#{name}#{params}:#{value}"
+
+            # The value stays raw (vCard escapes and all), so that
+            # structured values (N, ADR) keep their fields apart.
+            def as_json = { name:, params: param_map, value: }
+
+            # ";TYPE=home;TYPE=pref" -> { "TYPE" => "home,pref" }.
+            def param_map
+                params.split(";").reject(&:empty?)
+                      .each_with_object({}) do |param, map|
+                    key, value = param.split("=", 2)
+                    key   = key.upcase
+                    value = value.to_s.delete('"')
+                    map[key] = map.key?(key) ? "#{map[key]},#{value}" : value
+                end
+            end
+
+            # "item1.EMAIL" names that group's line only; "EMAIL" any group.
+            def named?(wanted)
+                wanted = wanted.upcase
+                wanted.include?(".") ? name.upcase == wanted : base == wanted
+            end
+
+            # Every parameter of wanted (";TYPE=home") is among ours.
+            def params?(wanted)
+                have = params.upcase.split(";")
+                wanted.upcase.split(";").reject(&:empty?)
+                      .all? { have.include?(it) }
+            end
+        end
+
+        def self.split_unquoted(text, sep)
+            quoted = false
+            text.each_char.with_index do |c, i|
+                quoted = !quoted if c == '"'
+                return [text[...i], text[(i + 1)..]] if c == sep && !quoted
+            end
+            [text, nil]
+        end
+
+        def self.parse_all(text)
+            text.gsub(/\r?\n[ \t]/, "").scan(
+                /^BEGIN:VCARD\r?$.*?^END:VCARD\r?$/mi
+            ).map { new(it) }
+        end
+
+        attr_reader :lines
+
+        def initialize(text)
+            body = text.gsub(/\r?\n[ \t]/, "").lines(chomp: true)
+                       .reject(&:empty?)
+            @lines = body.map { Line.parse(it) }
+                         .reject { %w[BEGIN END].include?(it.base) }
+        end
+
+        def [](name)  = lines.find { it.base == name }&.value
+        def all(name) = lines.select { it.base == name }.map(&:value)
+        def uid       = self["UID"]
+        def fn        = unescape(self["FN"] || "")
+
+        def unescape(value)
+            value.gsub(/\\([,;\\nN])/) do
+                c = Regexp.last_match(1)
+                "nN".include?(c) ? "\n" : c
+            end
+        end
+
+        def add(spec)
+            @lines << Line.parse(spec)
+        end
+
+        def set(spec)
+            line = Line.parse(spec)
+            delete(line.name)
+            @lines << line
+        end
+
+        # spec is NAME[;PARAM...][:VALUE]; returns how many lines went.
+        def delete(spec)
+            head, value = VCard.split_unquoted(spec, ":")
+            name, params = VCard.split_unquoted(head, ";")
+            count = @lines.size
+            @lines.reject! do
+                it.named?(name) && it.params?(params.to_s) &&
+                    (value.nil? || it.value == value)
+            end
+            count - @lines.size
+        end
+
+        def touch
+            set("REV:#{Time.now.utc.strftime("%Y%m%dT%H%M%SZ")}")
+        end
+
+        def to_s
+            body = ["BEGIN:VCARD", *lines.map(&:to_s), "END:VCARD"]
+            "#{body.map { fold(it) }.join("\r\n")}\r\n"
+        end
+
+        private
+
+        # Fold at 75 octets without splitting a UTF-8 character.
+        def fold(line)
+            out   = [+""]
+            limit = 75
+            line.each_char do |c|
+                if out.last.bytesize + c.bytesize > limit
+                    out << +" "
+                    limit = 75
+                end
+                out.last << c
+            end
+            out.join("\r\n")
+        end
+    end
+
+    # The HTTP side: one keep-alive connection to the address book home.
+    class Client
+        NS = { "d" => "DAV:", "c" => "urn:ietf:params:xml:ns:carddav" }
+             .freeze
+
+        # Properties fetched for listing and matching: everything but PHOTO.
+        SUMMARY = %w[UID FN N NICKNAME EMAIL TEL ORG].freeze
+
+        Book = Data.define(:url, :name) do
+            def id = File.basename(url.path)
+        end
+
+        PROPS = <<~XML.freeze
+            <d:propfind xmlns:d="DAV:">
+              <d:prop><d:displayname/><d:resourcetype/></d:prop>
+            </d:propfind>
+        XML
+
+        def initialize(home, user, password, book:, debug: false)
+            @home = home
+            @book = book
+            @user = user
+            @password = password
+            @http = Net::HTTP.new(home.host, home.port)
+            @http.use_ssl = home.scheme == "https"
+            @http.set_debug_output($stderr) if debug
+        end
+
+        # The collection --book or --url picked, found on first use.
+        def url = @url ||= locate(@book)
+
+        def books
+            @books ||= begin
+                res = request("PROPFIND", @home, PROPS, "Depth" => "1")
+                Nokogiri::XML(res.body)
+                        .xpath("//d:response[.//d:resourcetype/c:addressbook]",
+                               NS).map { book(it) }
+            end
+        end
+
+        # [ [href, etag, VCard], ... ] in the collection at -- summary
+        # properties only, unless full (which brings the photos along).
+        def cards(full: false, at: url)
+            res = request("REPORT", at, query(full), "Depth" => "1")
+            Nokogiri::XML(res.body).xpath("//d:response", NS).filter_map do
+                data = it.at_xpath(".//c:address-data", NS)&.text
+                next if data.nil? || data.empty?
+
+                [it.at_xpath("d:href", NS).text,
+                 it.at_xpath(".//d:getetag", NS)&.text,
+                 VCard.new(data)]
+            end
+        end
+
+        def get(href)
+            res = request("GET", url + href)
+            [VCard.new(res.body.force_encoding("UTF-8")), res["ETag"]]
+        end
+
+        # etag nil: create only (If-None-Match), else update only that version.
+        def put(href, card, etag = nil)
+            cond = etag ? { "If-Match" => etag } : { "If-None-Match" => "*" }
+            request("PUT", url + href, card.to_s,
+                    { "Content-Type" => "text/vcard; charset=utf-8" }
+                    .merge(cond))
+        end
+
+        def delete(href, etag)
+            request("DELETE", url + href, nil, "If-Match" => etag)
+        end
+
+        private
+
+        def book(node)
+            Book.new(url: @home + node.at_xpath("d:href", NS).text,
+                     name: node.at_xpath(".//d:displayname", NS)&.text.to_s)
+        end
+
+        # A URL as is; else an address book id, then a display name.
+        def locate(wanted)
+            return URI(wanted) if wanted.match?(%r{\Ahttps?://}i)
+
+            hit = books.select { it.id == wanted }
+            hit = books.select { it.name.casecmp?(wanted) } if hit.empty?
+            return hit.first.url if hit.size == 1
+
+            raise Error, "#{hit.empty? ? "no" : "more than one"} address " \
+                         "book #{wanted} (have: " \
+                         "#{books.map { "#{it.id} (#{it.name})" }.join(", ")})"
+        end
+
+        def query(full)
+            Nokogiri::XML::Builder.new do |xml|
+                xml["c"].send(:"addressbook-query",
+                              "xmlns:d" => NS["d"], "xmlns:c" => NS["c"]) do
+                    xml["d"].prop do
+                        xml["d"].getetag
+                        xml["c"].send(:"address-data") do
+                            next if full
+
+                            SUMMARY.each { xml["c"].prop(name: it) }
+                        end
+                    end
+                end
+            end.to_xml
+        end
+
+        def request(verb, uri, body = nil, headers = {})
+            req = Net::HTTPGenericRequest.new(verb, !body.nil?, true,
+                                              uri.request_uri, headers)
+            req.basic_auth(@user, @password)
+            req["Content-Type"] ||= "application/xml; charset=utf-8" if body
+            req.body = body
+            res = @http.request(req)
+            return res if res.is_a?(Net::HTTPSuccess)
+
+            raise HTTPError.new("#{verb} #{uri.path}: #{res.code} " \
+                                "#{res.message}#{reason(res)}", res.code.to_i)
+        end
+
+        # The precondition a DAV error body names, e.g. valid-address-data.
+        def reason(res)
+            return "" unless res["Content-Type"]&.include?("xml")
+
+            err = Nokogiri::XML(res.body).at_xpath("/d:error/*[1]", NS)
+            err ? " (#{err.name})" : ""
+        rescue Nokogiri::XML::SyntaxError
+            ""
+        end
+    end
+
+    # Where the address book home lives and who we are.
+    module Locate
+        module_function
+
+        def discover(user)
+            domain = user.split("@", 2)[1] or
+                raise Error, "cannot discover the server: user has no domain"
+            entry = "_carddavs._tcp.#{domain}"
+            Resolv::DNS.open do |dns|
+                srv = dns.getresources(entry, Resolv::DNS::Resource::IN::SRV)
+                         .min_by { [it.priority, -it.weight] } or
+                    raise Error, "no SRV record for #{entry}"
+                path = txt_path(dns, entry) || "/"
+                URI::HTTPS.build(host: srv.target.to_s, port: srv.port,
+                                 path: "#{path.chomp("/")}/user/#{user}/")
+            end
+        end
+
+        def txt_path(dns, entry)
+            dns.getresources(entry, Resolv::DNS::Resource::IN::TXT)
+               .flat_map(&:strings).find { it.start_with?("path=") }
+               &.delete_prefix("path=")
+        end
+
+        # The first entry for host in ~/.authinfo, then ~/.netrc (same
+        # syntax; # comments and backslash-continued lines are skipped).
+        def netrc(host)
+            %w[.authinfo .netrc].each do |name|
+                file = File.join(Dir.home, name)
+                next unless File.readable?(file)
+
+                entry = netrc_entries(File.binread(file))
+                        .find { it["machine"] == host }
+                return entry if entry
+            end
+            {}
+        end
+
+        def netrc_entries(text)
+            words = text.gsub(/\\\r?\n/, "").lines
+                        .reject { it.lstrip.start_with?("#") }
+                        .join.split
+            words.slice_before("machine").filter_map do
+                it.each_slice(2).to_h if it.first == "machine"
+            end
+        end
+    end
+end
+
+# ----------------------------------------------------------------------
+
+BACKUP_DIR = "~/.local/share/carddav"
+
+NETWORK_ERRORS = [SocketError, SystemCallError, Timeout::Error,
+                  OpenSSL::SSL::SSLError].freeze
+
+$opts = { book: "Default", add: [], set: [], delete: [] }
+$op   = OptionParser.new do |op|
+    op.banner = "CardDAV contact editor"
+    op.separator ""
+    op.separator "Usage: #{op.program_name} [options] COMMAND [ARGS]"
+    op.separator ""
+    op.separator "Commands:"
+    op.separator "    books                 list the address books (id, name)"
+    op.separator "    list [REGEX]          list contacts (UID, name, emails;"
+    op.separator "                          -A: book first)"
+    op.separator "    show CONTACT          print a contact's vCard"
+    op.separator "    add                   create a contact from the options"
+    op.separator "    set CONTACT           modify a contact from the options"
+    op.separator "    edit CONTACT          modify a contact in $EDITOR"
+    op.separator "    import FILE|-         create or update (by UID) cards"
+    op.separator "    delete CONTACT        delete a contact"
+    op.separator "    backup [FILE|-]       save the whole book as one .vcf"
+    op.separator "                          (default ./BOOK-TIMESTAMP.vcf;"
+    op.separator "                          -A: one per book, in DIR or .)"
+    op.separator ""
+    op.separator "CONTACT is a UID, or a regex matching exactly one contact's"
+    op.separator "name, nickname or email.  LINE is a vCard content line,"
+    op.separator "e.g. 'EMAIL;TYPE=work:jo@example.com'.  Restore a backup"
+    op.separator "with import."
+    op.separator ""
+    op.separator "Options:"
+    op.on "-u", "--user=STRING",     "Username"
+    op.on "-p", "--password=STRING", "Password"
+    op.on "-U", "--url=URL",         "Address book collection URL"
+    op.on "-b", "--book=NAME",       "Address book id or name (Default)"
+    op.on "-A", "--all",             "list, backup: every address book"
+    op.on       "--fn=NAME",         "Full name (sets FN, and N on add)"
+    op.on "-e", "--email=ADDR",      "Add an email"
+    op.on "-t", "--tel=NUMBER",      "Add a phone number"
+    op.on "-o", "--org=NAME",        "Set the organisation"
+    op.on "-a", "--add=LINE",        "Add a property" do
+        $opts[:add] << it
+    end
+    op.on "-s", "--set=LINE", "Replace a property" do
+        $opts[:set] << it
+    end
+    op.on "-d", "--delete=PROP[;PARAM][:VALUE]", "Remove a property" do
+        $opts[:delete] << it
+    end
+    op.on "-B", "--backup[=DIR]",    "Save each card before changing it",
+          "(-BDIR or --backup=DIR; default #{BACKUP_DIR})" do
+        $opts[:backup] = File.expand_path(it || BACKUP_DIR)
+    end
+    op.on "-n", "--dry-run",         "Print the result, change nothing"
+    op.on "-j", "--json",            "Print JSON: one document for list and",
+          "show, one object per line for changes"
+    op.on       "--debug",           "Dump the HTTP exchange"
+    op.on "-h", "--help" do
+        puts op
+        exit
+    end
+end
+
+def stamp(precise: false)
+    Time.now.strftime(precise ? "%Y%m%dT%H%M%S.%6N" : "%Y%m%dT%H%M%S")
+end
+
+# Writes text to stem.vcf, or stem-1.vcf, stem-2.vcf... never overwriting.
+def write_new(stem, text)
+    0.step do |n|
+        path = n.zero? ? "#{stem}.vcf" : "#{stem}-#{n}.vcf"
+        File.write(path, text, mode: "wx", perm: 0o600)
+        return path
+    rescue Errno::EEXIST
+        next
+    end
+end
+
+# The server's version of a card, saved under --backup before it changes.
+def keep(card)
+    dir = $opts[:backup]
+    return if dir.nil? || $opts[:"dry-run"]
+
+    FileUtils.mkdir_p(dir, mode: 0o700)
+    write_new(File.join(dir, "#{card.uid.to_s.tr("/", "_")}-" \
+                             "#{stamp(precise: true)}"), card.to_s)
+end
+
+# The fields list prints, unescaped.
+def card_json(card, href = nil)
+    { uid: card.uid, href:, fn: card.fn,
+      nickname: card.all("NICKNAME").map { card.unescape(it) },
+      email: card.all("EMAIL"), tel: card.all("TEL"),
+      org: card["ORG"]&.then { card.unescape(it) } }.compact
+end
+
+# What a change did: a line of text, or with --json one JSON object
+# (full: with every property of the card).
+def report(action, href, card, full: false)
+    unless $opts[:json]
+        return puts("#{action} #{card.uid}  #{card.fn}")
+    end
+
+    out = { action:, **card_json(card, href) }
+    out[:properties] = card.lines.map(&:as_json) if full
+    puts JSON.generate(out)
+end
+
+def die(msg, code = 1)
+    warn "#{$op.program_name}: #{msg}"
+    exit code
+end
+
+# The user (if not given) and password for the server at home: the
+# server's entry in ~/.authinfo, then ~/.netrc; for the user, then
+# $EMAIL; for the password, then a prompt.
+def credentials(home, user)
+    pass = $opts[:password] || ENV.fetch("CARDDAV_PASSWORD", nil)
+    rc   = CardDAV::Locate.netrc(home.host)
+    user ||= rc["login"] || email or
+        die "no user given (--user, CARDDAV_USER, an entry for " \
+            "#{home.host} in ~/.authinfo or ~/.netrc, or EMAIL)"
+    pass ||= rc["password"] if [nil, user].include?(rc["login"])
+    pass ||= IO.console&.getpass("Password for #{user}: ") or
+        die "no password for #{user}, and no terminal to ask on"
+    [user, pass]
+end
+
+def slash(url) = url.end_with?("/") ? url : "#{url}/"
+
+# $EMAIL, the address mail and git tools read; nil when unset or empty.
+def email = ENV.fetch("EMAIL", "").then { it.empty? ? nil : it }
+
+# Without --url the server is found from the user's domain, so the
+# user must be given; with it, the URL's host can name the user too.
+def client
+    user = $opts[:user] || ENV.fetch("CARDDAV_USER", nil)
+    if (url = $opts[:url])
+        url  = slash(url)
+        home = URI(url).merge("../")
+    else
+        user ||= email or
+            die "no user given (--user, CARDDAV_USER or EMAIL), and no " \
+                "--url to look one up for"
+        home = CardDAV::Locate.discover(user)
+    end
+    user, pass = credentials(home, user)
+    CardDAV::Client.new(home, user, pass, book: url || $opts[:book],
+                                          debug: $opts[:debug])
+end
+
+# [[label, url]...]: the selected address book, or with --all every
+# one, labelled by name.
+def sources(dav)
+    return [[nil, dav.url]] unless $opts[:all]
+
+    dav.books.map { [it.name, it.url] }
+end
+
+def resolve(dav, key)
+    die "missing CONTACT", 2 if key.nil?
+    all = dav.cards
+    hit = all.select do |href, _, card|
+        card.uid == key ||
+            File.basename(href, ".vcf") == key
+    end
+    return hit.first if hit.size == 1
+
+    re  = Regexp.new(key, Regexp::IGNORECASE)
+    hit = all.select do |_, _, card|
+        [card.fn, *card.all("NICKNAME"), *card.all("EMAIL")]
+            .any? { re.match?(it) }
+    end
+    return hit.first if hit.size == 1
+
+    die "no contact matches #{key}" if hit.empty?
+    die "#{key} is ambiguous:\n" +
+        hit.map { |_, _, c| "  #{c.uid}  #{c.fn}" }.join("\n")
+end
+
+def apply_options(card)
+    if (fn = $opts[:fn])
+        card.set("FN:#{escape(fn)}")
+    end
+    card.set("ORG:#{escape($opts[:org])}") if $opts[:org]
+    card.add("EMAIL;TYPE=home:#{$opts[:email]}") if $opts[:email]
+    card.add("TEL;TYPE=cell:#{$opts[:tel]}")     if $opts[:tel]
+    $opts[:delete].each do
+        warn "#{$op.program_name}: -d #{it} matched nothing" if
+            card.delete(it).zero?
+    end
+    $opts[:set].each    { card.set(it)    }
+    $opts[:add].each    { card.add(it)    }
+    card.touch
+end
+
+def escape(text) = text.gsub(/([,;\\])/, '\\\\\1').gsub("\n", '\n')
+
+# "Jean-Paul Sartre" -> "Sartre;Jean-Paul;;;", "Sartre, Jean-Paul" likewise.
+def name_of(fn)
+    words = fn.split
+    family, given = if fn.include?(",")
+                        fn.split(",", 2).map(&:strip)
+                    else
+                        [words.pop, words.join(" ")]
+                    end
+    "#{escape(family.to_s)};#{escape(given.to_s)};;;"
+end
+
+# vCard 3.0 requires N, and Cyrus enforces it.
+def store(dav, href, card, etag = nil)
+    card.set("N:#{name_of(card.fn)}") if card["N"].nil? && !card.fn.empty?
+    if $opts[:"dry-run"] && !$opts[:json]
+        puts card
+    elsif $opts[:"dry-run"]
+        report(etag ? "would update" : "would create", href, card, full: true)
+    else
+        dav.put(href, card, etag)
+        report(etag ? "updated" : "created", href, card)
+    end
+end
+
+def cmd_books(dav)
+    if $opts[:json]
+        return puts(JSON.pretty_generate(dav.books.map do
+            { id: it.id, name: it.name, url: it.url.to_s }
+        end))
+    end
+
+    dav.books.each { puts [it.id, it.name].join("\t") }
+end
+
+def cmd_list(dav, pattern = nil)
+    re   = pattern && Regexp.new(pattern, Regexp::IGNORECASE)
+    rows = sources(dav).flat_map do |label, at|
+        dav.cards(at:).filter_map do |href, _, card|
+            [label, href, card] if listed?(card, re)
+        end
+    end
+    rows = rows.sort_by { |_, _, card| card.fn.downcase }
+    if $opts[:json]
+        return puts(JSON.pretty_generate(rows.map do |label, href, card|
+            { book: label, **card_json(card, href) }.compact
+        end))
+    end
+
+    rows.each do |label, _, card|
+        puts [*label, card.uid, card.fn, card.all("EMAIL").join(", ")]
+            .join("\t")
+    end
+end
+
+def listed?(card, re)
+    fields = [card.fn, *%w[NICKNAME EMAIL TEL ORG].flat_map { card.all(it) }]
+    re.nil? || fields.any? { re.match?(it) }
+end
+
+def cmd_show(dav, key)
+    href = resolve(dav, key)[0]
+    card, etag = dav.get(href)
+    return puts(card) unless $opts[:json]
+
+    puts JSON.pretty_generate({ **card_json(card, href), etag:,
+                                properties: card.lines.map(&:as_json) })
+end
+
+def cmd_add(dav)
+    fn_line = $opts[:set].any? { it.match?(/\AFN[;:]/i) }
+    die "add needs --fn (or an FN line)", 2 if $opts[:fn].nil? && !fn_line
+    uid  = SecureRandom.uuid
+    card = CardDAV::VCard.new("VERSION:3.0\nUID:#{uid}\n")
+    apply_options(card)
+    store(dav, "#{uid}.vcf", card)
+end
+
+def cmd_set(dav, key)
+    href = resolve(dav, key)[0]
+    card, etag = dav.get(href)
+    keep(card)
+    apply_options(card)
+    store(dav, href, card, etag)
+end
+
+# The edited file is removed only once the card is stored (or unchanged);
+# on any failure it is kept and its path printed.
+def cmd_edit(dav, key)
+    href = resolve(dav, key)[0]
+    card, etag = dav.get(href)
+    keep(card)
+    file = Tempfile.create(["carddav-", ".vcf"])
+    file.write(card.to_s.gsub("\r\n", "\n"))
+    file.close
+    File.delete(file.path) if edit_loop(dav, href, card, etag, file.path)
+end
+
+def edit_loop(dav, href, card, etag, path)
+    loop do
+        system(*ENV.fetch("EDITOR", "vi").shellsplit, path) or
+            die "editor failed; your copy is #{path}"
+        return save_edit(dav, href, card, etag, path)
+    rescue CardDAV::Error, *NETWORK_ERRORS => e
+        warn "#{$op.program_name}: #{e.message}"
+        conflict = e.is_a?(CardDAV::HTTPError) && e.status == 412
+        die "#{conflict ? "the card changed on the server; " : ""}" \
+            "your edits are kept in #{path}" if conflict || !again?
+    end
+end
+
+def save_edit(dav, href, card, etag, path)
+    edited = CardDAV::VCard.new(File.read(path, encoding: "UTF-8"))
+    if edited.to_s == card.to_s
+        warn "#{$op.program_name}: unchanged"
+    else
+        edited.touch
+        store(dav, href, edited, etag)
+    end
+    true
+end
+
+def again?
+    tty = IO.console or return false
+    tty.print "Edit again? [Y/n] "
+    !tty.gets.to_s.strip.downcase.start_with?("n")
+end
+
+def cmd_import(dav, *files)
+    die "import needs a FILE (or - for stdin)", 2 if files.empty?
+    known = dav.cards.to_h { |href, etag, card| [card.uid, [href, etag]] }
+    import_cards(files).each do |card|
+        href, etag = known[card.uid] || ["#{SecureRandom.uuid}.vcf", nil]
+        keep(dav.get(href).first) if etag
+        store(dav, href, card, etag)
+    end
+end
+
+# The cards in files, one per UID: the last version given wins, so a
+# --backup directory restores to its newest copies.
+def import_cards(files)
+    files.flat_map { CardDAV::VCard.parse_all(read_utf8(it)) }
+         .each { it.add("UID:#{SecureRandom.uuid}") if it.uid.nil? }
+         .to_h { [it.uid, it] }.values
+end
+
+def read_utf8(file)
+    return File.read(file, encoding: "UTF-8") unless file == "-"
+
+    $stdin.set_encoding("UTF-8")
+    $stdin.read
+end
+
+def cmd_delete(dav, key)
+    href, etag, card = resolve(dav, key)
+    keep(dav.get(href).first)
+    if $opts[:"dry-run"]
+        report("would delete", href, card)
+    else
+        dav.delete(href, etag)
+        report("deleted", href, card)
+    end
+end
+
+# With --all, one BOOK-TIMESTAMP.vcf per address book, in file (a
+# directory) or here.
+def cmd_backup(dav, file = nil)
+    return backup(dav, dav.url, file, $opts[:book].tr("/", "_")) unless
+        $opts[:all]
+
+    die "backup --all needs a DIR, not -", 2 if file == "-"
+    die "#{file} is not a directory" if file && !File.directory?(file)
+    dav.books.each do
+        backup(dav, it.url, nil, File.join(file || ".", it.id))
+    end
+end
+
+def backup(dav, at, file, stem)
+    cards = dav.cards(full: true, at:).map { it[2] }
+               .sort_by { it.fn.downcase }
+    text  = cards.map(&:to_s).join
+    return $stdout.write(text) if file == "-"
+
+    if file
+        File.write(file, text, perm: 0o600)
+    else
+        file = write_new("#{stem}-#{stamp}", text)
+    end
+    if $opts[:json]
+        puts JSON.generate({ file:, count: cards.size })
+    else
+        warn "#{cards.size} contacts saved to #{file}"
+    end
+end
+
+begin
+    ARGV.map! { it.dup.force_encoding("UTF-8") }
+    $op.parse!(ARGV, into: $opts)
+    command = ARGV.shift or die "missing COMMAND (see --help)", 2
+    action  = :"cmd_#{command}"
+    die "unknown command: #{command}", 2 unless respond_to?(action, true)
+
+    send(action, client, *ARGV)
+rescue OptionParser::ParseError, ArgumentError, RegexpError,
+       URI::Error => e
+    die e.message, 2
+rescue Errno::EPIPE
+    exit
+rescue CardDAV::Error, *NETWORK_ERRORS => e
+    die e.message
+end

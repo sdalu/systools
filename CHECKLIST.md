@@ -9,9 +9,11 @@ command or a question with a yes or a no at the end of it.
 Run in order. A red gate is answered before anything else, and the
 answer is sometimes that the checker is wrong rather than the file.
 
-- [ ] `make check` -- preflight: every script and test parses,
-      shellcheck finds nothing, and every tool has a man page that lints
-      clean and offers exactly the options its `getopts` takes.
+- [ ] `make check` -- preflight: every script and test parses (the
+      Ruby ones, `caldav` and `carddav`, under `ruby -wc`, where a
+      warning fails), shellcheck finds nothing in the sh ones, and every
+      tool has a man page that lints clean and offers exactly the
+      options it takes (its `getopts`, or its OptionParser).
 - [ ] `make tests` -- the suite, the scripts under `sh`.
 - [ ] `make tests SH=dash` -- **if this round touched a script and dash
       is at hand.** Debian's `/bin/sh` refuses what FreeBSD sh lets pass.

@@ -28,6 +28,10 @@ colours became plain `-v` lines. `pdf2jpg` was checked by running both
 versions over the same eight cases of options on two PDFs: the JPEGs
 came out byte-identical.
 
+`caldav` and `carddav` came in later as Ruby, and stayed so: the
+question this entry closes was whether every host should need Ruby, and
+those two run only on the desktop that uses a calendar (DESIGN.md).
+
 
 ## Expiring one six-month date per run
 

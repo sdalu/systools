@@ -1,0 +1,318 @@
+.Dd October 18, 2026
+.Dt CARDDAV 1
+.Os
+.Sh NAME
+.Nm carddav
+.Nd list, show, add and change contacts on a CardDAV server
+.Sh SYNOPSIS
+.Nm
+.Op Fl Ajn
+.Op Fl B Ns Op Ar dir
+.Op Fl a Ar line
+.Op Fl b Ar book
+.Op Fl d Ar prop
+.Op Fl e Ar email
+.Op Fl o Ar org
+.Op Fl p Ar password
+.Op Fl s Ar line
+.Op Fl t Ar tel
+.Op Fl U Ar url
+.Op Fl u Ar user
+.Op Fl -debug
+.Op Fl -fn Ar name
+.Ar command
+.Op Ar argument ...
+.Nm
+.Fl h
+.Sh DESCRIPTION
+.Nm
+reads and changes one address book on a CardDAV server.
+Options and the command may come in any order.
+The commands are:
+.Bl -tag -width Ds
+.It Cm books
+The address books of the home, one line each: id and name.
+.It Cm list Op Ar regex
+The contacts, by name, one line each: UID, full name and emails.
+A
+.Ar regex
+keeps those whose full name, nickname, email, telephone or organisation
+it matches, without regard to case.
+.It Cm show Ar contact
+The contact's vCard, as the server holds it.
+.It Cm add
+A new contact made from the options: it needs a full name
+.Pq Fl -fn ,
+from which its structured name
+.Pq Ql N
+is made when it has none, the last word as the family name, or what
+comes before a comma
+.Pq Ql "Sartre, Jean-Paul" .
+.It Cm set Ar contact
+The contact changed by the options.
+.It Cm edit Ar contact
+The contact opened in
+.Ev EDITOR ,
+and stored when the file was changed.
+A file that does not parse is offered back to the editor, when there is
+a terminal to ask on.
+.It Cm import Ar file ...
+The vCards of the files, or of stdin for
+.Ql - :
+a card whose UID the address book has replaces it, any other is
+created, and a card with no UID is given one.
+When several files hold the same UID, the last one wins, so a
+.Fl B
+directory restores to its newest copies.
+.It Cm delete Ar contact
+The contact deleted.
+.It Cm backup Op Ar file
+Every card of the address book, photos included, saved in one file: to
+.Ar file ,
+to stdout for
+.Ql - ,
+or by default to a new
+.Pa BOOK-TIMESTAMP.vcf
+in the current directory, named after
+.Fl b .
+With
+.Fl A ,
+one file per address book,
+.Pa ID-TIMESTAMP.vcf ,
+in the directory
+.Ar file
+or the current one.
+.Cm import
+restores it.
+.El
+.Pp
+A
+.Ar contact
+is a UID, the name of its resource without
+.Pa .vcf ,
+or a regular expression matching the full name, a nickname or an email
+of exactly one contact; a regex matching several lists them and fails.
+.Pp
+A contact is stored as vCard 3.0, with a structured name
+.Pq Ql N ,
+which Cyrus requires, and its
+.Ql REV
+stamped.
+Every change is conditional, so a newer version is never overwritten:
+a contact is created only where none is
+.Pq Ql If-None-Match: * ,
+and replaced or deleted only in the version read
+.Pq Ql If-Match .
+When it changed on the server meanwhile, the change fails;
+.Cm edit
+then keeps the edited copy and names it.
+.Ss The server and the address book
+With
+.Fl U ,
+the URL is the address book, and its parent the home.
+Without it, the home is found from the domain of the user: the
+.Ql _carddavs._tcp
+SRV record of the domain names the server, its TXT record
+.Ql path=
+the path, and the home is
+.Pa https://server:port/path/user/USER/ ;
+.Fl b
+then picks an address book in it, by id or by name.
+.Ss Credentials
+The user is
+.Fl u ,
+else
+.Ev CARDDAV_USER ,
+else, with
+.Fl U ,
+the login of the entry for the URL's host in
+.Pa ~/.authinfo ,
+then
+.Pa ~/.netrc ;
+else
+.Ev EMAIL .
+Without
+.Fl U
+the user must be one of the options or variables, since the server is
+found from it.
+The password is
+.Fl p ,
+else
+.Ev CARDDAV_PASSWORD ,
+else the password of the server's entry, that of the URL's host or of
+the server found, when its login is the user's, else asked on the
+terminal.
+In those files, lines starting with
+.Ql #
+are skipped, and a trailing backslash joins a line to the next.
+.Sh OPTIONS
+.Bl -tag -width Ds
+.It Fl A , Fl -all
+.Cm list
+and
+.Cm backup :
+every address book;
+.Cm list
+starts each line with the book's name.
+.It Fl a Ar line , Fl -add Ns = Ns Ar line
+Add a vCard content line, such as
+.Ql EMAIL;TYPE=work:jo@example.org ;
+repeatable.
+.It Fl B Ns Op Ar dir , Fl -backup Ns Op = Ns Ar dir
+Save the server's version of each card before changing or deleting it,
+as
+.Pa UID-TIMESTAMP.vcf
+in
+.Ar dir ,
+by default
+.Pa ~/.local/share/carddav .
+The directory is attached:
+.Fl B Ns Pa dir .
+.It Fl b Ar book , Fl -book Ns = Ns Ar book
+The address book, by id or name;
+.Ql Default
+by default.
+.It Fl d Ar prop , Fl -delete Ns = Ns Ar prop
+Remove the content lines named
+.Ar prop ,
+in the form
+.Ar name Ns Op ; Ns Ar param Ns Op : Ns Ar value :
+.Ql EMAIL;TYPE=work
+removes the work emails,
+.Ql item1.EMAIL
+only that group's; repeatable.
+One matching nothing is warned about.
+.It Fl -debug
+Print the HTTP exchange on stderr.
+.It Fl e Ar email , Fl -email Ns = Ns Ar email
+Add a home email.
+.It Fl -fn Ns = Ns Ar name
+Set the full name
+.Pq Ql FN .
+.It Fl h , Fl -help
+Print the usage and exit.
+.It Fl j , Fl -json
+Print JSON: one document for
+.Cm books ,
+.Cm list
+and
+.Cm show ,
+one object a line for each change.
+.It Fl n , Fl -dry-run
+Change nothing: print the card that would be stored
+.Pq with Fl j , a JSON object holding it ,
+or the deletion that would be made.
+.It Fl o Ar org , Fl -org Ns = Ns Ar org
+Set the organisation.
+.It Fl p Ar password , Fl -password Ns = Ns Ar password
+The password
+.Pq Sx Credentials .
+.It Fl s Ar line , Fl -set Ns = Ns Ar line
+Replace every content line of that name by this one; repeatable.
+.Fl d ,
+then
+.Fl s ,
+then
+.Fl a
+are applied.
+.It Fl t Ar tel , Fl -tel Ns = Ns Ar tel
+Add a mobile telephone number.
+.It Fl U Ar url , Fl -url Ns = Ns Ar url
+The address book, by its URL
+.Pq Sx The server and the address book .
+.It Fl u Ar user , Fl -user Ns = Ns Ar user
+The user
+.Pq Sx Credentials .
+.El
+.Sh ENVIRONMENT
+.Bl -tag -width CARDDAV_PASSWORD
+.It Ev CARDDAV_PASSWORD
+The password, when
+.Fl p
+is not given.
+.It Ev CARDDAV_USER
+The user, when
+.Fl u
+is not given.
+.It Ev EDITOR
+The editor of
+.Cm edit ;
+.Xr vi 1
+by default.
+.It Ev EMAIL
+The user, when nothing else names one
+.Pq Sx Credentials ;
+the address that git and mail tools read too.
+.El
+.Sh FILES
+.Bl -tag -width Ds
+.It Pa ~/.authinfo , Pa ~/.netrc
+The user and password, as the entry of the server
+.Pq Ql machine host login user password secret .
+.It Pa ~/.local/share/carddav/
+Where
+.Fl B
+saves cards by default.
+.El
+.Sh EXIT STATUS
+.Bl -tag -width Ds -compact
+.It 0
+Success.
+.It 1
+A failure: the server or the network failed or refused, no contact or
+several matched, the card changed on the server meanwhile, the
+directory of
+.Cm backup Fl A
+is not one, or there is no user or password.
+.It 2
+A usage error: an unknown option or command, a missing argument, a
+regex or URL that does not parse, or
+.Cm backup Fl A
+to stdout.
+.El
+.Sh EXAMPLES
+Who has an address at example.org:
+.Bd -literal -offset indent
+$ carddav list @example.org
+.Ed
+.Pp
+A new contact, then a second email for them:
+.Bd -literal -offset indent
+$ carddav add --fn 'Ada Lovelace' -e ada@example.org -t '+44 20 1234'
+$ carddav set Lovelace -a 'EMAIL;TYPE=work:ada@work.example'
+.Ed
+.Pp
+Every address book saved, one file each:
+.Bd -literal -offset indent
+$ mkdir contacts && carddav -A backup contacts
+.Ed
+.Sh SEE ALSO
+.Xr caldav 1
+.Sh STANDARDS
+.Bl -tag -width "RFC 6764" -compact
+.It RFC 2426
+vCard MIME Directory Profile; vCard 3.0.
+.It RFC 6352
+CardDAV: vCard Extensions to Web Distributed Authoring and Versioning
+(WebDAV).
+.It RFC 6764
+Locating Services for Calendaring Extensions to WebDAV (CalDAV) and
+vCard Extensions to WebDAV (CardDAV); the SRV and TXT records.
+.El
+.Sh CAVEATS
+.Cm import
+stops at the first card the server refuses, the cards before it
+stored.
+.Pp
+.Fl p
+puts the password on the command line, where
+.Xr ps 1
+shows it to every user, and
+.Fl -debug
+prints it, in the Authorization header; the entry in
+.Pa ~/.authinfo
+shows it to nobody.
+.Pp
+.Nm
+is Ruby, unlike the other tools of systools: it needs Ruby 3.4 or later
+and the nokogiri gem.
