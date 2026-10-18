@@ -6,14 +6,17 @@ PREFIX ?= /usr/local
 BINDIR  = $(PREFIX)/bin
 LIBDIR  = $(PREFIX)/lib/systools
 
-.PHONY: all install uninstall link unlink deps check
+.PHONY: all install uninstall link unlink check
 
 all: check
 
 install:
-	install -d $(DESTDIR)$(BINDIR) $(DESTDIR)$(LIBDIR)
+	install -d $(DESTDIR)$(BINDIR)
+	[ ! -d lib/systools ] || install -d $(DESTDIR)$(LIBDIR)
 	install -m 755 bin/* $(DESTDIR)$(BINDIR)
-	install -m 644 lib/systools/* $(DESTDIR)$(LIBDIR)
+	if [ -d lib/systools ]; then \
+	    install -m 644 lib/systools/* $(DESTDIR)$(LIBDIR); \
+	fi
 
 uninstall:
 	for f in bin/*; do rm -f $(DESTDIR)$(BINDIR)/$${f##*/}; done
@@ -26,9 +29,6 @@ link:
 
 unlink:
 	for f in bin/*; do [ -L $(BINDIR)/$${f##*/} ] && rm -f $(BINDIR)/$${f##*/}; done; true
-
-deps:
-	bundle install
 
 check:
 	@for f in bin/*; do \

@@ -1,99 +1,130 @@
-#!/usr/bin/env ruby
+#!/bin/sh
+# zfs-prune-snapshots — destroy all but the newest snapshots of datasets
+# usage: zfs-prune-snapshots [-k number] [-r] [-d] [-n] [-v] dataset...
+#
+# For each dataset (and with -r each of its descendants, taken one by
+# one) the newest NUMBER snapshots are kept and every older one is
+# destroyed, in one `zfs destroy dataset@%snapshot` range.
+# Exit status: 0 success, 1 a dataset failed, 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
 
-require 'optparse'
-require 'open3'
-require 'pastel'
-require 'tty/logger'
-require 'tty/spinner'
+readonly version=1.1.0
+prog=${0##*/}
 
-Version = '1.0.0'
+# zfs(8) lives in /sbin or /usr/sbin, which Linux cron's PATH and
+# an unprivileged Linux user's leave out.
+PATH=$PATH:/sbin:/usr/sbin
 
-# Parse command line
-$opts = { :keep      => 1,
-          :recursive => false,
-          :deferred  => false,
+usage() {
+    cat <<EOF
+usage: $prog [-k number] [-r] [-d] [-n] [-v] dataset...
+  -k number  newest snapshots to keep (default 1)
+  -r         also prune the descendants of each dataset
+  -d         mark for deferred destruction (if not possible immediately)
+  -n         dry run: show what would be destroyed
+  -v         report each dataset pruned
+  -h         show this help
+  -V         show version
+EOF
+}
+
+warn() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+info() {
+    [ "$verbose" -eq 0 ] || printf '%s: %s\n' "$prog" "$*" >&2
+}
+
+# Read snapshot names newest first and print, for each dataset with more
+# than KEEP of them, "count dataset@newest-to-destroy", datasets in the
+# order zfs listed them.
+cutoffs() {
+    awk -v keep="$keep" '
+        {
+            at = index($0, "@")
+            ds = substr($0, 1, at - 1)
+            if (!(ds in n)) order[++datasets] = ds
+            if (++n[ds] == keep + 1) cut[ds] = $0
         }
+        END {
+            for (i = 1; i <= datasets; i++) {
+                ds = order[i]
+                if (ds in cut) print n[ds] - keep, cut[ds]
+            }
+        }'
+}
 
-$parser = OptionParser.new do |opts|
-    opts.banner = "Usage: #{opts.program_name} [options] dataset..."
-    opts.separator ''
+prune() {
+    local dataset="$1" list plan count snap ds
+    set -- -H -t snapshot -S creation -o name
+    if [ "$recursive" -eq 1 ]; then
+        set -- "$@" -r
+    else
+        set -- "$@" -d 1
+    fi
+    if ! list=$(zfs list "$@" -- "$dataset"); then
+        warn "failed to retrieve snapshots ($dataset)"
+        return 1
+    fi
+    plan=$(printf '%s\n' "$list" | cutoffs)
 
-    opts.separator 'Options:'
-    opts.on '-k', '--keep=NUMBER',  Integer,
-            "Number of last snapshots to keep",
-            "  (default to #{$opts[:keep]})"
-    opts.on '-r', '--recursive',     "Looks also for children datasets"
-    opts.on '-d', '--deferred',      "Mark for deferred destruction",
-                                     "  (if not possible immediate)"
-    opts.on '-v', '--[no-]verbose',  "Run verbosely"
-    opts.on '-h', '--help',          "Show this message" do
-        puts opts
-        exit
-    end
-    opts.on '-V', '--version',       "Show version" do
-        puts opts.ver
-        exit
-    end
-    opts.separator ''
-end
-$parser.parse!(into: $opts)
-
-# Process title
-Process.setproctitle($parser.program_name)
-
-# Show help if no dataset given
-if ARGV.empty?
-  puts $parser
-  exit 1
-end
-
-# Initialize
-$pastel  = Pastel.new
-$logger  = TTY::Logger.new if $opts[:verbose]
-
-# Process datasets
-ARGV.each do |dataset|
-  keep = $opts[:keep]
-
-  # Retrieve snapshots
-  cmd  = [ 'zfs', 'list', '-H', '-t', 'snapshot', '-S', 'creation',
-                                '-o', 'name'  ]
-  cmd += $opts[:recursive] ? [ '-r' ] : [ '-d1' ]
-  cmd += [ '--', dataset ]
-  data, error, status = Open3.capture3(*cmd)
-  unless status.success? && error.empty?
-    unless $logger&.error(dataset + ' ' +
-                          $pastel.yellow('(retrieving snapshots)'))
-      warn "Failed to retrieve snapshots (#{dataset})"
-    end
-    next
-  end
-
-  # For each snapshot name grouped by datasets
-  data.lines.map(&:chomp).map { it.split('@', 2) }
-      .group_by(&:first).transform_values { it.map(&:last) }
-      .each do |ds, snapshots|
-    if snapshots.size > keep
-      snap    = snapshots[-(1 + keep)]
-      spinner = if $opts[:verbose]
-                  TTY::Spinner.new("[:spinner] #{ds}",
-                                  :success_mark => $pastel.green('✔'),
-                                  :error_mark   => $pastel.red(  '✖'))
-                end
-      begin
-        spinner&.auto_spin
-        cmd  = [ 'zfs', 'destroy'       ]
-        cmd += [ '-d'                   ] if $opts[:deferred]
-        cmd += [ '--', "#{ds}@%#{snap}" ]
-        if system(*cmd)
-          spinner&.success($pastel.blue("➡ #{snap}")) # ⇨
-        # spinner&.success($pastel.yellow('(skipped)'))
+    while read -r count snap; do
+        [ -n "$snap" ] || continue
+        ds=${snap%%@*}
+        set -- destroy
+        [ "$deferred" -eq 0 ] || set -- "$@" -d
+        [ "$dry_run" -eq 0 ] || set -- "$@" -n -v
+        if zfs "$@" -- "$ds@%${snap#*@}"; then
+            if [ "$dry_run" -eq 0 ]; then
+                info "$ds: destroyed $count, up to ${snap#*@}"
+            else
+                info "$ds: would destroy $count, up to ${snap#*@}"
+            fi
         else
-          unless spinner&.error($pastel.yellow('(failed)'))
-            warn "Failed to destroy snapshot (#{ds})"
-          end
-        end
-      end
-    end
-  end
-end
+            warn "failed to destroy snapshots ($ds)"
+            status=1
+        fi
+    done <<EOF
+$plan
+EOF
+}
+
+keep=1
+recursive=0
+deferred=0
+dry_run=0
+verbose=0
+
+while getopts k:rdnvhV opt; do
+    case $opt in
+    k) keep=$OPTARG ;;
+    r) recursive=1 ;;
+    d) deferred=1 ;;
+    n) dry_run=1 ;;
+    v) verbose=1 ;;
+    h) usage; exit 0 ;;
+    V) printf '%s %s\n' "$prog" "$version"; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+
+case $keep in
+'' | *[!0-9]*)
+    warn "keep must be a number: $keep"
+    exit 2
+    ;;
+esac
+if [ "$#" -eq 0 ]; then
+    usage >&2
+    exit 2
+fi
+
+status=0
+for dataset in "$@"; do
+    prune "$dataset" || status=1
+done
+exit "$status"

@@ -1,72 +1,166 @@
-#!/usr/bin/env ruby
+#!/bin/sh
+# pushover — send a notification through the Pushover API
+# usage: pushover [-t title] [-v] [USER:]APP message
+#
+# Tokens come from ~/.pushover (or $PUSHOVER_CONFIG), a YAML file of
+# this shape; USER defaults to the first user listed:
+#
+#   app:
+#     myapp:  <application token>
+#   user:
+#     me:     <user key>
+#
+# In the message, %{HOST} becomes the short host name and %{HOSTNAME}
+# the full one; any other %{...} is removed.  Tokens are handed to curl
+# on stdin, never on its command line.
+# Exit status: 0 sent, 1 failure, 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
 
-Version = '0.1.0'
+readonly version=0.2.0
+readonly api=https://api.pushover.net/1/messages.json
+prog=${0##*/}
+: "${PUSHOVER_CONFIG:=$HOME/.pushover}"
 
-require 'optparse'
-require 'yaml'
-require 'socket'
-require_relative '../lib/systools/pushover'
+usage() {
+    cat <<EOF
+usage: $prog [-t title] [-v] [USER:]APP message
+  -t title  title of the notification
+  -v        report the request id once sent
+  -h        show this help
+  -V        show version
+EOF
+}
 
-
-# Parse command line
-$opts   = { }
-$parser = OptionParser.new do |opts|
-    opts.banner = "Usage: pushover [options] [USER:]APP MSG"
-    opts.separator ''
-
-    opts.separator 'Options:'
-    opts.on '-t', '--title TITLE',   "Use title"
-    opts.on '-v', '--[no-]verbose',  "Run verbosely"
-    opts.on '-V', '--version',       "Show version" do
-        puts opts.ver
-        exit
-    end
-end
-$parser.parse!(into: $opts)
-
-# Process title
-Process.setproctitle($parser.program_name)
-
-begin
-    # Load configuration
-    cfg = begin
-              YAML.load_file(File.join(ENV['HOME'], '.pushover'))
-          rescue Errno::ENOENT
-              raise "Configuration file ~/.pushover not found!"
-          end
-    cfg['app' ].each {|name, key| PushOver.register name.to_sym, key }
-    cfg['user'].each {|name, key| PushOver.user     name.to_sym, key }
-        
-    user, _ = cfg['user'].first
-    default_user = user.to_sym
-
-    # Check arguments
-    raise "user:app and message arguments are required" if ARGV.size != 2
-        
-    # Retrieve USER:APP
-    user_app = ARGV[0].split(':', 2)
-    if user_app.one?
-        raise "no user specified and no default user" if default_user.nil?
-        user_app.unshift(default_user)
-    end
-    user, app = user_app
-    
-    # Retrieve message
-    msg = ARGV[1]
-
-    # Build substitution values
-    hostname = Socket.gethostname
-    subst    = { '%{HOST}'     => hostname.split('.')[0],
-                 '%{HOSTNAME}' => hostname }
-
-    # Substited message
-    msg      = msg.gsub(/%\{[^}]+\}/, subst)
-
-    # Pushover
-    $pushover = PushOver.new user.to_sym, app.to_sym
-    $pushover.send(msg, $opts[:title])
-
-rescue RuntimeError => e
-    warn "#{$parser.program_name}: #{e.message}"
+die() {
+    printf '%s: %s\n' "$prog" "$*" >&2
     exit 1
-end
+}
+
+# Print the value of NAME under SECTION of the config, or with an empty
+# NAME the first name of SECTION.  Only "section:" lines and indented
+# "name: value" lines are understood, which is all the format needs.
+config() {
+    awk -v section="$1" -v name="$2" '
+        /^[ \t]*(#|$)/ { next }
+        /^[^ \t]/ {
+            sub(/:.*/, ""); current = $0; next
+        }
+        current == section {
+            line = $0
+            sub(/^[ \t]+/, "", line)
+            key = line; sub(/:.*/, "", key)
+            value = line; sub(/^[^:]*:[ \t]*/, "", value)
+            sub(/[ \t]+#.*/, "", value)
+            sub(/[ \t]+$/, "", value)
+            if (value ~ /^".*"$/ || value ~ /^\047.*\047$/)
+                value = substr(value, 2, length(value) - 2)
+            if (name == "") { print key; exit }
+            if (key == name) { print value; exit }
+        }' "$PUSHOVER_CONFIG"
+}
+
+# Look up a token, and refuse anything that is not a plain token: the
+# value is written into a curl config, where quotes would break out.
+token() {
+    local value
+    value=$(config "$1" "$2")
+    [ -n "$value" ] || die "unknown $1: $2"
+    case $value in
+    *[!A-Za-z0-9]*) die "malformed token for $1 $2 in $PUSHOVER_CONFIG" ;;
+    esac
+    printf '%s\n' "$value"
+}
+
+# Print the message with its %{...} placeholders replaced; it travels
+# in the environment because awk -v would expand its backslashes.
+substitute() {
+    MESSAGE=$1 awk -v host="$host" -v hostname="$hostname" 'BEGIN {
+        m = ENVIRON["MESSAGE"]
+        while (match(m, /%[{][^}]+[}]/)) {
+            key = substr(m, RSTART + 2, RLENGTH - 3)
+            out = out substr(m, 1, RSTART - 1)
+            if (key == "HOST") out = out host
+            else if (key == "HOSTNAME") out = out hostname
+            m = substr(m, RSTART + RLENGTH)
+        }
+        printf "%s", out m
+    }'
+}
+
+title=
+verbose=0
+
+while getopts t:vhV opt; do
+    case $opt in
+    t) title=$OPTARG ;;
+    v) verbose=1 ;;
+    h) usage; exit 0 ;;
+    V) printf '%s %s\n' "$prog" "$version"; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 2 ]; then
+    usage >&2
+    exit 2
+fi
+
+[ -r "$PUSHOVER_CONFIG" ] ||
+    die "configuration file $PUSHOVER_CONFIG not found"
+# FreeBSD base has fetch(1), which cannot POST: curl is a dependency.
+command -v curl > /dev/null 2>&1 || die "curl is required"
+
+case $1 in
+*:*)
+    user=${1%%:*}
+    app=${1#*:}
+    ;;
+*)
+    user=$(config user '')
+    app=$1
+    [ -n "$user" ] || die "no user specified and no default user"
+    ;;
+esac
+user_key=$(token user "$user")
+app_token=$(token app "$app")
+
+hostname=$(uname -n)
+host=${hostname%%.*}
+message=$(substitute "$2")
+[ -n "$message" ] || die "empty message"
+
+# Form fields go through --data-urlencode as name=value, a form curl
+# never reads as a file name; tokens go in the config read from stdin.
+set -- --data-urlencode "message=$message"
+[ -z "$title" ] || set -- "$@" --data-urlencode "title=$title"
+
+response=$(
+    printf 'data-urlencode = "token=%s"\ndata-urlencode = "user=%s"\n' \
+        "$app_token" "$user_key" |
+        curl -sS -K - -w '\n%{http_code}' "$@" -- "$api"
+) || die "request failed"
+
+code=${response##*
+}
+body=${response%
+*}
+
+case $code in
+2??)
+    if [ "$verbose" -eq 1 ]; then
+        request=$(printf '%s\n' "$body" |
+            sed -n 's/.*"request":"\([^"]*\)".*/\1/p')
+        printf '%s: sent (request %s)\n' "$prog" "$request" >&2
+    fi
+    ;;
+429)
+    die "message limit reached"
+    ;;
+*)
+    errors=$(printf '%s\n' "$body" |
+        sed -n 's/.*"errors":\[\(.*\)\].*/\1/p')
+    die "HTTP $code${errors:+: $errors}"
+    ;;
+esac

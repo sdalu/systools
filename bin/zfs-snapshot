@@ -1,137 +1,223 @@
-#!/usr/bin/env ruby
+#!/bin/sh
+# zfs-snapshot — take today's snapshot of a dataset and expire old ones
+# usage: zfs-snapshot [-r] [-p profile] [-t date] [-n] [-v] [-D] dataset
+#
+# Meant to run once a day.  Snapshots are named after the date
+# (dataset@YYYY-MM-DD).  Profile "default", the only one:
+#   - take today's snapshot;
+#   - destroy the one from 7 days ago, unless it is a Sunday's;
+#   - destroy those 6 months old, so Sunday snapshots expire then.
+# Six months back from consecutive days is not always consecutive
+# (2026-03-01 maps to 2025-09-01, the day before to 2025-08-28), so
+# every date the 6-month mark moved past since yesterday is destroyed.
+# Exit status: 0 success, 1 failure, 2 usage error.
+# 'local' is not POSIX, but every shell this runs under has it
+# shellcheck disable=SC3043
+set -eu
 
-require 'date'
-require 'optparse'
-require 'shellwords'
-require 'tty/logger'
+readonly version=0.2.0
+prog=${0##*/}
 
-Version = '0.1.0'
+# zfs(8) lives in /sbin or /usr/sbin, which Linux cron's PATH and
+# an unprivileged Linux user's leave out.
+PATH=$PATH:/sbin:/usr/sbin
 
+usage() {
+    cat <<EOF
+usage: $prog [-r] [-p profile] [-t date] [-n] [-v] [-D] dataset
+  -r          snapshot and destroy recursively
+  -p profile  snapshotting profile (default: default)
+  -t date     act as if today were DATE (YYYY-MM-DD)
+  -n          dry run: show what would be done
+  -v          report snapshots created and destroyed
+  -D          also report the commands run and snapshots skipped
+  -h          show this help
+  -V          show version
+EOF
+}
 
-######################################################################
+log() {
+    printf '%s: %s\n' "$prog" "$*" >&2
+}
 
-module ZFS
-    def self.exists?(fs)
-        cmd  = %w(zfs list -H)
-        cmd << fs
-        system(*cmd, :in => :close, :out => File::NULL, :err => File::NULL)
-    end
+info() {
+    [ "$verbose" -eq 0 ] || log "$*"
+}
 
-    def self.log_cmd_status(cmd, status, logger: nil)
-      logger&.debug {  [ Shellwords.join(cmd),
-                         ' (', status ? 'OK' : 'FAILED', ')'
-                       ].join  }
-    end
+debug() {
+    [ "$debug" -eq 0 ] || log "$*"
+}
 
-    def self.snapshot(fs, name, recursive: false, logger: nil)
-        name = name&.to_s
-        raise ArgumentError if name.nil? || name.empty?
-        cmd  = %w(zfs snapshot)
-        cmd << '-r' if $opts[:recursive]
-        cmd << [ fs, name ].join('@')
-        system(*cmd, :in  => :close,
-                     :out => File::NULL, :err => File::NULL).tap do |status|
-            log_cmd_status(cmd, status, logger: logger)
-        end
-    end
-
-    def self.destroy(fs, name, recursive: false, logger: nil)
-        name = name&.to_s
-        raise ArgumentError if name.nil? || name.empty?
-        cmd  = %w(zfs destroy)
-        cmd << '-r' if $opts[:recursive]
-        cmd << [ fs, name ].join('@')
-        system(*cmd, :in  => :close,
-                     :out => File::NULL, :err => File::NULL).tap do |status|
-            log_cmd_status(cmd, status, logger: logger)
-        end
-    end
-end
-
-######################################################################
-
-$opts  = { :header => true, :profile => 'default' }
-parser = OptionParser.new do |op|
-    op.banner = "Usage: #{op.program_name} fs"
-
-    op.on '-r', '--recursive',       'Recursive'
-    op.on '-p', '--profile PROFILE', 'Snapshotting profile'
-    op.on '-v', '--[no-]verbose',    'Run verbosely'
-    op.on '-D', '--[no-]debug',      'Enable debug output'
-    op.on '-V', '--version',         'Version' do
-        puts op.ver
-        exit
-    end
-    op.on '-h', '--help',          'Help' do
-        puts op
-        exit
-    end    
-end
-parser.order!(into: $opts)
-
-unless ARGV.one?
-    puts parser
-    exit
-end
-
-$fs = ARGV.shift
-unless ZFS.exists?($fs)
-    $stderr.puts "#{parser.program_name}: dataset doesn't exist"
+die() {
+    log "$*"
     exit 1
-end
+}
 
-$logger = if $opts[:verbose] || $opts[:debug]
-              TTY::Logger.new do |cfg|
-                  cfg.level = $opts[:debug] ? :debug : :info
-              end
-          end
+# Calendar arithmetic on day numbers (days since 1970-01-01), from
+# Howard Hinnant's civil calendar algorithms: date(1) has no date-math
+# flag common to FreeBSD (-v) and GNU (-d).
 
+# Print the day number of YYYY-MM-DD.
+day_of() {
+    local y m d era yoe doy
+    y=${1%%-*}
+    m=${1#*-}
+    d=${m#*-}
+    m=${m%%-*}
+    m=${m#0}
+    d=${d#0}
+    y=$((y - (m <= 2)))
+    era=$((y / 400))
+    yoe=$((y - era * 400))
+    doy=$(((153 * (m > 2 ? m - 3 : m + 9) + 2) / 5 + d - 1))
+    printf '%s\n' $((era * 146097 + yoe * 365 + yoe / 4 - yoe / 100 + doy -
+        719468))
+}
 
-######################################################################
+# Print the YYYY-MM-DD of a day number.
+date_of() {
+    local z era doe yoe doy mp y m d
+    z=$(($1 + 719468))
+    era=$((z / 146097))
+    doe=$((z - era * 146097))
+    yoe=$(((doe - doe / 1460 + doe / 36524 - doe / 146096) / 365))
+    doy=$((doe - (365 * yoe + yoe / 4 - yoe / 100)))
+    mp=$(((5 * doy + 2) / 153))
+    d=$((doy - (153 * mp + 2) / 5 + 1))
+    m=$((mp < 10 ? mp + 3 : mp - 9))
+    y=$((yoe + era * 400 + (m <= 2)))
+    printf '%04d-%02d-%02d\n' "$y" "$m" "$d"
+}
 
+# Print 0 (Sunday) to 6 (Saturday) for a day number.
+weekday_of() {
+    printf '%s\n' $((($1 + 4) % 7))
+}
 
-$logger&.debug "Using profile <#{$opts[:profile]}>"
+# Print the day number N months before a day number, the day of month
+# clamped to the length of the target month.
+months_before() {
+    local date y m d last
+    date=$(date_of "$1")
+    y=${date%%-*}
+    m=${date#*-}
+    d=${m#*-}
+    m=${m%%-*}
+    m=${m#0}
+    d=${d#0}
+    m=$((y * 12 + m - 1 - $2))
+    y=$((m / 12))
+    m=$((m % 12 + 1))
+    case $m in
+    2) last=$((28 + (y % 4 == 0 && (y % 100 != 0 || y % 400 == 0)))) ;;
+    4 | 6 | 9 | 11) last=30 ;;
+    *) last=31 ;;
+    esac
+    [ "$d" -le "$last" ] || d=$last
+    day_of "$(printf '%04d-%02d-%02d' "$y" "$m" "$d")"
+}
 
+snapshot_exists() {
+    zfs list -H -t snapshot -o name -- "$1" > /dev/null 2>&1
+}
 
-$ts = Date.today
-$ts_start_of_week   = $ts - ($ts.wday - 1) % 7
-$tx_start_of_month  = $ts - ($ts.day  - 1)
-$ts_prev_day        = $ts - 1
-$ts_prev_sunday     = $ts_prev_day - $ts_prev_day.wday
-$ts_prev_week       = $ts - 7
-$ts_prev_month      = $ts.prev_month
-$ts_prev_3month     = $ts.prev_month(3)
-$ts_prev_6month     = $ts.prev_month(6)
+# Run a zfs command, or with -n only show it.
+run() {
+    if [ "$dry_run" -eq 1 ]; then
+        log "would run: zfs $*"
+        return 0
+    fi
+    debug "running: zfs $*"
+    zfs "$@"
+}
 
-zopts = { :recursive => $opts[:recursive],
-          :logger    => $logger }
+create() {
+    local snap="$dataset@$1"
+    if snapshot_exists "$snap"; then
+        info "$snap already exists"
+        return 0
+    fi
+    info "creating $snap"
+    set -- snapshot
+    [ "$recursive" -eq 0 ] || set -- "$@" -r
+    run "$@" -- "$snap"
+}
 
+destroy() {
+    local snap="$dataset@$1"
+    if ! snapshot_exists "$snap"; then
+        debug "no $snap to destroy"
+        return 0
+    fi
+    info "destroying $snap"
+    set -- destroy
+    [ "$recursive" -eq 0 ] || set -- "$@" -r
+    run "$@" -- "$snap"
+}
 
-begin
+recursive=0
+profile=default
+today=
+dry_run=0
+verbose=0
+debug=0
 
-    case $opts[:profile]
-    when 'default'
-        create   = [ ]
-        create  << $ts
-        create.map!(&:to_s)
+while getopts rp:t:nvDhV opt; do
+    case $opt in
+    r) recursive=1 ;;
+    p) profile=$OPTARG ;;
+    t) today=$OPTARG ;;
+    n) dry_run=1 ;;
+    v) verbose=1 ;;
+    D) verbose=1; debug=1 ;;
+    h) usage; exit 0 ;;
+    V) printf '%s %s\n' "$prog" "$version"; exit 0 ;;
+    *) usage >&2; exit 2 ;;
+    esac
+done
+shift $((OPTIND - 1))
+if [ "$#" -ne 1 ]; then
+    usage >&2
+    exit 2
+fi
+dataset=$1
 
-        destroy  = [ ]
-        destroy << $ts_prev_week   if $ts_prev_week != $ts_prev_sunday
-        destroy << $ts_prev_6month
-        destroy.map!(&:to_s)
+case $profile in
+default) ;;
+*) log "unsupported profile: $profile"; exit 2 ;;
+esac
 
-        $logger&.info "Create : #{create .join(', ')}"
-        $logger&.info "Destroy: #{destroy.join(', ')}"
+[ -n "$today" ] || today=$(date +%Y-%m-%d)
+case $today in
+[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]) ;;
+*) log "date must be YYYY-MM-DD: $today"; exit 2 ;;
+esac
+day=$(day_of "$today")
+if [ "$(date_of "$day")" != "$today" ]; then
+    log "no such date: $today"
+    exit 2
+fi
 
-        ZFS.snapshot($fs, $ts, **zopts)
-            
-        ZFS.destroy($fs, $ts_prev_week,   **zopts) if $ts_prev_week != $ts_prev_sunday
-        ZFS.destroy($fs, $ts_prev_6month, **zopts)
-    else
-        raise "unsupported profile (#{$opts[:profile]})"
-    end
-rescue => e
-    $stderr.puts "#{parser.program_name}: #{e}"
-end
+zfs list -H -o name -- "$dataset" > /dev/null 2>&1 ||
+    die "dataset doesn't exist: $dataset"
+debug "using profile $profile, today is $today"
 
-exit 0
+# A failed snapshot leaves the old ones alone, so nothing expires
+# without its replacement.
+create "$today" || die "failed to create $dataset@$today"
+
+status=0
+
+week_ago=$((day - 7))
+if [ "$(weekday_of "$week_ago")" -ne 0 ]; then
+    destroy "$(date_of "$week_ago")" || status=1
+fi
+
+expired=$(months_before $((day - 1)) 6)
+until_day=$(months_before "$day" 6)
+while [ "$expired" -lt "$until_day" ]; do
+    expired=$((expired + 1))
+    destroy "$(date_of "$expired")" || status=1
+done
+
+exit "$status"
