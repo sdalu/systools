@@ -1,13 +1,14 @@
 #!/bin/sh
 #
 # screen-extend [-n] [-v] [-i internal] [-o output] [-m mode] [-p place]
+# screen-extend [-n] [-v] [-i internal] -s
 #
 # Extend the desktop onto an external output, under X11, on FreeBSD and
 # Linux alike: the external output becomes the primary at its preferred
 # mode, or -m's, at 0x0, and the internal panel is placed against it, at
-# its own preferred mode.  With no external output connected, the
-# internal panel alone is left on, as the primary: so one command, run on
-# docking and undocking alike, gives the layout for either.
+# its own preferred mode.  With no external output connected, or with -s,
+# the internal panel alone is left on, as the primary: so one command, run
+# on docking and undocking alike, gives the layout for either.
 #
 #   place  where the internal panel goes: below (the default), above,
 #          left, right, or off
@@ -33,10 +34,13 @@
 #   -o  the external output
 #   -m  the external output's mode (WxH), instead of its preferred one
 #   -p  where the internal panel goes (default: below)
+#   -s  single: the internal panel alone, even with an external output
+#       connected, which is turned off
 #   -h  show this help
 #
 # Exit: 0 done, 1 no connected output, a named output not connected, a
-# mode it does not list, or a layout that would not stick; 2 usage error.
+# mode it does not list, -s with no internal panel, or a layout that would
+# not stick; 2 usage error.
 #
 # shellcheck disable=SC3043 # 'local' is supported by every shell targeted here
 set -eu
@@ -60,6 +64,7 @@ usage() {
     printf 'usage: %s [-n] [-v] [-i internal] [-o output] [-m mode]\n' \
         "$progname"
     printf '       %*s [-p below|above|left|right|off]\n' "${#progname}" ''
+    printf '       %s [-nv] [-i internal] -s\n' "$progname"
 }
 
 bad_usage() {
@@ -94,9 +99,14 @@ is_connected() {
 }
 
 # Outputs disconnected but still driving a mode: left over from an undock.
+# The geometry is not always the third field: xrandr writes "primary"
+# before it, and the output left over is the one the docked layout made
+# primary.
 stale() {
-    awk '$2 == "disconnected" && $3 ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/ {
-             print $1 }' "$probe"
+    awk '$2 == "disconnected" {
+             for (i = 3; i <= NF; i++)
+                 if ($i ~ /^[0-9]+x[0-9]+\+[0-9]+\+[0-9]+$/) { print $1; next }
+         }' "$probe"
 }
 
 # Every mode WxH an output lists, in xrandr's own order (largest first).
@@ -148,23 +158,29 @@ EXPECT
 }
 
 main() {
-    local internal='' external='' mode='' place=below
+    local internal='' external='' mode='' place=below placed=0 single=0
     local all out imode ix=0 iy=0 ex=0 ey=0 expect try
 
-    while getopts nvi:o:m:p:h opt; do
+    while getopts nvi:o:m:p:sh opt; do
         case $opt in
             n) dryrun=1         ;;
             v) verbose=1        ;;
             i) internal=$OPTARG ;;
             o) external=$OPTARG ;;
             m) mode=$OPTARG     ;;
-            p) place=$OPTARG    ;;
+            p) place=$OPTARG placed=1 ;;
+            s) single=1         ;;
             h) usage; exit 0    ;;
             *) bad_usage        ;;
         esac
     done
     shift $((OPTIND - 1))
     [ $# -eq 0 ] || bad_usage
+    if [ "$single" -ne 0 ] &&
+        { [ -n "$external$mode" ] || [ "$placed" -ne 0 ]; }; then
+        warn "-s: the panel alone, so no -o, -m or -p"
+        bad_usage
+    fi
 
     case $mode in
         '') ;;
@@ -204,7 +220,9 @@ main() {
         internal=$(printf '%s\n' "$all" |
             awk '/^(eDP|LVDS|DSI)/ { print; exit }')
     fi
-    if [ -n "$external" ]; then
+    if [ "$single" -ne 0 ]; then
+        [ -n "$internal" ] || die "-s: no internal panel connected"
+    elif [ -n "$external" ]; then
         is_connected "$external" || die "$external: not a connected output"
         [ "$external" != "$internal" ] || die "$external: is the internal panel"
     else

@@ -82,13 +82,21 @@ check_rc 1 "never taken: exit 1"
 check_in "$err" "the layout would not stick after 3 attempts" "never taken: said so"
 check_eq "$(grep -c . "$XRANDR_LOG")" 3 "never taken: three attempts"
 
-# undocked: DP-1 gone but still holding its geometry
-sed 's/^DP-1 connected primary /DP-1 disconnected /' "$docked" > "$tmp/p/undocked"
+# undocked: DP-1 gone but still holding its geometry, and still the
+# primary, as xrandr reports it after an undock from the docked layout
+sed 's/^DP-1 connected primary /DP-1 disconnected primary /' "$docked" \
+    > "$tmp/p/undocked"
 probes "$tmp/p/undocked"
 se -n
 check_rc 0 "undocked: succeeds"
 check_eq "$out" "xrandr --output eDP-1 --mode 1920x1200 --pos 0x0 --primary --output DP-1 --off" \
-    "undocked: the panel alone and primary, the stale output off"
+    "undocked: the panel alone and primary, the stale primary output off"
+sed 's/^DP-1 connected primary /DP-1 disconnected /' "$docked" \
+    > "$tmp/p/undocked-plain"
+probes "$tmp/p/undocked-plain"
+se -n
+check_eq "$out" "xrandr --output eDP-1 --mode 1920x1200 --pos 0x0 --primary --output DP-1 --off" \
+    "undocked: a stale output that is not the primary is turned off too"
 se -n -m 2560x1440
 check_rc 1 "undocked with -m: exit 1, nothing to set to it"
 
@@ -106,12 +114,26 @@ check_in "$out" "--output HDMI-1 --mode 1920x1080 --pos 0x0 --primary" \
     "one that lists modes: the first other connected output is the external"
 check_in "$out" "--output DP-1 --off" "and the one after it is turned off"
 
+# -s: the panel alone, the connected external turned off
+probes "$docked"
+se -n -s
+check_rc 0 "-s, docked: succeeds"
+check_eq "$out" "xrandr --output eDP-1 --mode 1920x1200 --pos 0x0 --primary --output DP-1 --off" \
+    "-s: the panel alone and primary, the connected external off"
+probes "$tmp/p/undocked"
+se -n -s
+check_eq "$out" "xrandr --output eDP-1 --mode 1920x1200 --pos 0x0 --primary --output DP-1 --off" \
+    "-s, undocked: the same as without it"
+
 awk '/^eDP-1 / { skip = 1; next } /^[^ ]/ { skip = 0 } !skip' "$docked" \
     > "$tmp/p/desktop"
 probes "$tmp/p/desktop"
 se -n
 check_eq "$out" "xrandr --output DP-1 --mode 2560x1440 --pos 0x0 --primary" \
     "no internal panel: the external alone"
+se -n -s
+check_rc 1 "-s with no internal panel: exit 1"
+check_in "$err" "no internal panel" "-s with no internal panel: said so"
 
 probes "$docked"
 se -n -o HDMI-1
@@ -126,7 +148,8 @@ se -n
 unset XRANDR_EXIT
 check_rc 1 "xrandr --query fails: exit 1"
 
-for args in '-m a1x1b' '-m 1920x' '-p sideways' 'extra' '-z'; do
+for args in '-m a1x1b' '-m 1920x' '-p sideways' 'extra' '-z' \
+    '-s -o DP-1' '-s -m 2560x1440' '-s -p below'; do
     # shellcheck disable=SC2086  # each case is a word list
     se $args
     check_rc 2 "refuses [$args] as a usage error"

@@ -175,6 +175,18 @@ dark. Positions are worked out and given explicitly rather than with
 `--below` and the like, so the result does not depend on the mode an
 output was left in.
 
+An output left over from an undock is found by its geometry anywhere on
+its line, not in the third field: xrandr writes `primary` before the
+geometry, and the output left over is precisely the one the docked
+layout made primary.
+
+`-s` lays the panel out alone with an external screen still connected,
+which a caller's "undocked" policy needs when it disagrees with what is
+plugged in (a direct HDMI cable, the dock on battery). It is an option
+here rather than an `xrandr --off` in the caller because only
+screen-extend knows which outputs it would otherwise light, and its
+read-back covers the result either way.
+
 
 ## shrink-pdf: never worse than the input
 

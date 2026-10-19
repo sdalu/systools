@@ -1,4 +1,4 @@
-.Dd October 18, 2026
+.Dd October 19, 2026
 .Dt SCREEN-EXTEND 1
 .Os
 .Sh NAME
@@ -12,6 +12,10 @@
 .Op Fl o Ar output
 .Op Fl p Ar place
 .Nm
+.Op Fl nv
+.Op Fl i Ar internal
+.Fl s
+.Nm
 .Fl h
 .Sh DESCRIPTION
 .Nm
@@ -22,8 +26,9 @@ The external output becomes the primary, at its preferred mode or at
 .Fl m Ns 's,
 at 0x0, and the internal panel is placed against it at its own
 preferred mode: below it, above it, to its left or right, or off.
-With no external output connected, the internal panel alone is left
-on, as the primary.
+With no external output connected, or with
+.Fl s ,
+the internal panel alone is left on, as the primary.
 So one command, run on docking and on undocking alike, gives the
 layout for either.
 .Pp
@@ -96,6 +101,14 @@ or
 Without an external output, the panel stays on whatever
 .Ar place
 says.
+.It Fl s
+Single: the internal panel alone, as the primary, even with an external
+output connected; every other output is turned off.
+It takes none of
+.Fl m ,
+.Fl o
+and
+.Fl p .
 .It Fl v
 Report the outputs found, the layout chosen and each attempt that did
 not take, on stderr.
@@ -126,16 +139,25 @@ The layout was applied, or printed with
 No output is connected, an output named is not connected, a mode is
 not listed,
 .Fl m
-was given with no external output to set, or the layout would not
+was given with no external output to set,
+.Fl s
+was given with no internal panel connected, or the layout would not
 stick after three attempts.
 .It 2
 A usage error, a
 .Ar mode
 not of the form
 .Ar W Ns x Ns Ar H
-or a
+a
 .Ar place
-not in the list included.
+not in the list, or
+.Fl s
+with
+.Fl m ,
+.Fl o
+or
+.Fl p
+included.
 .El
 .Sh EXAMPLES
 On docking or undocking, the external screen as the primary and the
@@ -152,6 +174,11 @@ $ screen-extend -p left -m 1920x1080
 The external screen alone, with what would be run shown first:
 .Bd -literal -offset indent
 $ screen-extend -n -p off
+.Ed
+.Pp
+The laptop's panel alone, an external screen still plugged in or not:
+.Bd -literal -offset indent
+$ screen-extend -s
 .Ed
 .Sh SEE ALSO
 .Xr is-docked 1 ,

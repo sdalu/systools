@@ -22,7 +22,7 @@ there is nothing to build.
 | `pdf2jpg` | turn PDF pages into JPEGs at a pixel size, optionally under a byte cap per page, each stage done by the tool best at it | `pdftoppm`; `magick` to downsample; `cjpeg` (mozjpeg best) or `magick` to encode; `gs` for `-e gs` |
 | `pushover` | send a [Pushover](https://pushover.net/api) notification, tokens read from `~/.pushover` | `curl` |
 | `qr` | encode text as a QR code, drawn in the terminal or written as SVG, PNG, EPS or XPM | `qrencode` (4.1 or later, for its SVG options) |
-| `screen-extend` | lay an external X11 output out as the primary, the internal panel below, above, beside it or off; the panel alone when undocked | `xrandr` |
+| `screen-extend` | lay an external X11 output out as the primary, the internal panel below, above, beside it or off; the panel alone when undocked, or with `-s` | `xrandr` |
 | `screen-mirror` | mirror one X11 output onto the others, at the largest mode they share, or scaled; `-x` undoes it | `xrandr` |
 | `shrink-pdf` | make a PDF smaller by recompressing it with Ghostscript; the original is passed through when the result is not smaller | `gs` |
 | `term-title` | set the terminal's window title or icon name (the window name under screen and tmux), or run a command under its own title and restore the old one | a terminal that speaks xterm's title sequences, or screen or tmux |
